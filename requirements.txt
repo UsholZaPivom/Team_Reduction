@@ -1,0 +1,9 @@
+python-docx
+regex
+pandas
+natasha
+pymorphy2
+pymorphy2-dicts-ru
+rapidfuzz
+openpyxl
+setuptools<82

@@ -1,0 +1,29 @@
+# Виртуальное окружение
+.venv/
+venv/
+
+# Кэш Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Результаты работы программы
+result_all/
+result_stage1/
+result_stage1_v2/
+result_stage1_v3/
+result_stage2/
+result_stage3/
+
+# Excel и временные файлы Office
+~$*.docx
+~$*.xlsx
+
+# Служебные файлы IDE
+.idea/
+.vscode/
+
+# Системные файлы
+.DS_Store
+Thumbs.db

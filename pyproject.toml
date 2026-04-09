@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools<82", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "team-reduction"
+version = "0.1.0"
+description = "Автоматизированное средство формирования списка сокращений документа в Microsoft Word"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "python-docx",
+    "regex",
+    "pandas",
+    "natasha",
+    "pymorphy2",
+    "pymorphy2-dicts-ru",
+    "rapidfuzz",
+    "openpyxl",
+    "setuptools<82"
+]
