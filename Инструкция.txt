@@ -6,7 +6,7 @@
 
 создать окружение на Python 3.12;
 выполнить pip install -r requirements.txt;
-положить файл input.docx рядом с main.py;
+положить файл test_reduction_input.docx рядом с main.py;
 запустить python main.py.
 
 Все результаты автоматически сохраняются в папку result_all по трём этапам обработки.
