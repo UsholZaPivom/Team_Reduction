@@ -17,11 +17,9 @@ abbreviation_extraction_stage2.py
 4. Уменьшены дубли standalone в предложении
 5. Если объявленная полная форма не попала в reducible_terms,
    она автоматически добавляется в список терминов.
-
-Что НЕ делает модуль:
-- не решает, нужно ли вводить новую аббревиатуру;
-- не изменяет текст документа;
-- не выполняет замену расшифровок на аббревиатуры.
+6. Источник "Обозначения и сокращения" имеет приоритет над standalone
+   и над менее точными long_form из основного текста.
+7. Улучшена очистка long_form для конструкций вида "(далее – АББР)".
 """
 
 from dataclasses import dataclass, asdict
@@ -142,7 +140,7 @@ class ExistingAbbreviationExtractor:
         self.segmenter = Segmenter()
         self.morph = MorphAnalyzer()
 
-        self.classic_abbr_pattern = r"[A-ZА-ЯЁ][A-ZА-ЯЁ0-9-]{1,9}"
+        self.classic_abbr_pattern = r"[A-ZА-ЯЁ][A-ZА-ЯЁ0-9-]{1,15}"
         self.word_pattern = regex.compile(r"[A-Za-zА-Яа-яЁё-]+")
 
         self.pattern_long_first = regex.compile(
@@ -168,19 +166,30 @@ class ExistingAbbreviationExtractor:
 
         self.false_positive_abbr = {
             "РФ", "РТФ", "MS", "WORD", "PDF", "DOCX",
-            "ДАЛЕЕ", "ТАБЛИЦА", "РИСУНОК", "ОБЩИЕ", "ПРИЛОЖЕНИЕ"
+            "ДАЛЕЕ", "ТАБЛИЦА", "РИСУНОК", "ОБЩИЕ", "ПРИЛОЖЕНИЕ",
+            "ЛИСТ", "ЛИСТОВ"
         }
 
         self.allowed_pos = {"NOUN", "ADJF", "ADJS", "PRTF", "PRTS"}
         self.context_lemmas = {
             "в", "во", "на", "при", "по", "внутри", "внутренний",
             "сноска", "дополнительно", "указанный", "указать",
-            "подсистема", "контроль", "использоваться",
             "отчёт", "документ", "пример", "тестирование", "проверка",
             "данный", "этот", "тот", "далее", "рамка", "проект",
             "создавать", "создаваемый", "настоящий", "который",
-            "выполняться", "использовать", "устанавливать"
+            "выполняться", "использовать", "устанавливать",
+            "описывать", "текущий", "наименование", "состав"
         }
+
+        self.left_noise_lemmas = {
+            "обеспечение", "обеспечивать", "состав", "наименование",
+            "решение", "цель", "функционал", "параметр", "рамка",
+            "проект", "технический", "настройка", "порядок"
+        }
+
+        self.leading_context_patterns = [
+            regex.compile(r"^(?:по|для|в рамках|в составе|с целью)\s+", flags=regex.IGNORECASE),
+        ]
 
     def split_into_sentences(self, text: str) -> List[str]:
         if not text.strip():
@@ -218,11 +227,14 @@ class ExistingAbbreviationExtractor:
     def _is_term_like_words(self, words: List[str]) -> bool:
         if len(words) < 2 or len(words) > 8:
             return False
+
         pos_list = [self._get_pos(word) for word in words]
         noun_count = sum(1 for pos in pos_list if pos == "NOUN")
         modifier_count = sum(1 for pos in pos_list if pos in {"ADJF", "ADJS", "PRTF", "PRTS"})
+
         if pos_list[-1] != "NOUN":
             return False
+
         return noun_count >= 2 or (noun_count >= 1 and modifier_count >= 1)
 
     def _normalize_abbreviation(self, abbreviation: str) -> str:
@@ -244,7 +256,8 @@ class ExistingAbbreviationExtractor:
             parts = text.split()
             if 1 < len(parts) <= 4:
                 if all(regex.fullmatch(r"[A-Za-z0-9-]+", part) for part in parts):
-                    if sum(1 for part in parts if regex.search(r"[A-Za-z]", part)) >= 2:
+                    alpha_parts = sum(1 for part in parts if regex.search(r"[A-Za-z]", part))
+                    if alpha_parts >= 2:
                         return True
 
         return False
@@ -257,8 +270,38 @@ class ExistingAbbreviationExtractor:
             return False
         return True
 
+    def _remove_left_context(self, text: str) -> str:
+        text = self._clean_long_form(text)
+
+        for pattern in self.leading_context_patterns:
+            text = pattern.sub("", text).strip()
+
+        words = self._extract_words(text)
+        if len(words) < 2:
+            return text
+
+        lemmas = [self._get_lemma(word) for word in words]
+
+        start = 0
+        while start < len(words) - 1:
+            lemma = lemmas[start]
+            pos = self._get_pos(words[start])
+
+            if lemma in self.left_noise_lemmas:
+                start += 1
+                continue
+            if pos in {"PREP", "CONJ", "PRCL"}:
+                start += 1
+                continue
+            if not self._is_content_word(words[start]) and self._is_content_word(words[start + 1]):
+                start += 1
+                continue
+            break
+
+        return " ".join(words[start:]).strip()
+
     def _shrink_long_form(self, raw_text: str, direction: str) -> str:
-        text = self._clean_long_form(raw_text)
+        text = self._remove_left_context(raw_text)
         words = self._extract_words(text)
         if len(words) < 2:
             return text
@@ -402,23 +445,18 @@ class Stage2ReductionAnalyzer:
             text = str(fragment.text).strip()
             lowered = text.lower()
 
-            if "обозначения и сокращения" in lowered:
+            if fragment.source_type == "heading" and "обозначения и сокращения" in lowered:
                 in_glossary = True
                 glossary_started = True
                 continue
 
             if in_glossary:
-                if (
-                    lowered.startswith("общие положения")
-                    or lowered.startswith("1 общие положения")
-                    or lowered.startswith("1.1 ")
-                    or lowered.startswith("1 ")
-                ):
+                if fragment.source_type == "heading" and "обозначения и сокращения" not in lowered:
                     break
 
-                lines = [line.strip() for line in text.split("\n") if line.strip()] or [text]
+                candidate_lines = [line.strip() for line in text.split("\n") if line.strip()] or [text]
 
-                for line in lines:
+                for line in candidate_lines:
                     match = self.abbreviation_extractor.pattern_glossary_line.match(line)
                     if not match:
                         continue
@@ -428,7 +466,7 @@ class Stage2ReductionAnalyzer:
 
                     if not self.abbreviation_extractor._is_valid_abbreviation(abbreviation):
                         continue
-                    if len(long_form.split()) < 1:
+                    if not long_form:
                         continue
 
                     result.append(
@@ -444,7 +482,43 @@ class Stage2ReductionAnalyzer:
                         )
                     )
 
-        return result if glossary_started else []
+        if not result:
+            for fragment in fragments:
+                text = str(fragment.text).strip()
+                match = self.abbreviation_extractor.pattern_glossary_line.match(text)
+                if not match:
+                    continue
+                abbreviation = self.abbreviation_extractor._normalize_abbreviation(match.group("abbr"))
+                long_form = self.abbreviation_extractor._clean_long_form(match.group("long"))
+                if not self.abbreviation_extractor._is_valid_abbreviation(abbreviation):
+                    continue
+                if not long_form:
+                    continue
+                if len(text.split()) <= 12:
+                    result.append(
+                        FoundAbbreviation(
+                            abbreviation=abbreviation,
+                            long_form=long_form,
+                            detection_type="glossary_section",
+                            source_type=fragment.source_type,
+                            source_index=fragment.source_index,
+                            sentence=text,
+                            matched_term="",
+                            match_score=100.0
+                        )
+                    )
+
+        return self.abbreviation_extractor._deduplicate(result) if (glossary_started or result) else []
+
+    def _source_priority(self, detection_type: str) -> int:
+        priorities = {
+            "glossary_section": 5,
+            "declared_long_dalee": 4,
+            "declared_long_first": 3,
+            "declared_abbr_first": 2,
+            "standalone": 1,
+        }
+        return priorities.get(str(detection_type), 0)
 
     def run(self, docx_path: str | Path, output_dir: str | Path) -> Dict[str, Path]:
         docx_path = Path(docx_path)
@@ -536,11 +610,20 @@ class Stage2ReductionAnalyzer:
         terms = reducible_terms_df.to_dict("records")
         matched: List[FoundAbbreviation] = []
 
+        glossary_map = {}
+        for item in found_abbreviations:
+            if item.detection_type == "glossary_section" and item.long_form:
+                glossary_map[self.abbreviation_extractor._normalize_abbreviation(item.abbreviation)] = item.long_form
+
         for item in found_abbreviations:
             best_term = ""
             best_score = 0.0
+
             abbreviation = self.abbreviation_extractor._normalize_abbreviation(item.abbreviation)
-            long_form = item.long_form.strip().lower()
+            long_form = str(item.long_form or "").strip().lower()
+
+            if abbreviation in glossary_map:
+                long_form = glossary_map[abbreviation].strip().lower()
 
             for term_row in terms:
                 term = str(term_row.get("term", ""))
@@ -562,7 +645,7 @@ class Stage2ReductionAnalyzer:
             matched.append(
                 FoundAbbreviation(
                     abbreviation=item.abbreviation,
-                    long_form=item.long_form,
+                    long_form=(glossary_map.get(abbreviation, item.long_form) or ""),
                     detection_type=item.detection_type,
                     source_type=item.source_type,
                     source_index=item.source_index,
@@ -577,13 +660,8 @@ class Stage2ReductionAnalyzer:
     def _build_merged_table(self, reducible_terms_df: pd.DataFrame, existing_abbreviations_df: pd.DataFrame) -> pd.DataFrame:
         if reducible_terms_df.empty:
             return pd.DataFrame(columns=[
-                "term",
-                "normalized_term",
-                "suggested_abbreviation",
-                "frequency",
-                "abbreviation_found_in_text",
-                "found_abbreviation",
-                "match_score"
+                "term", "normalized_term", "suggested_abbreviation", "frequency",
+                "abbreviation_found_in_text", "found_abbreviation", "match_score"
             ])
 
         existing_records = existing_abbreviations_df.to_dict("records") if not existing_abbreviations_df.empty else []
@@ -595,13 +673,20 @@ class Stage2ReductionAnalyzer:
 
             matched_items = []
             for abbr_row in existing_records:
-                found_abbreviation = str(abbr_row.get("abbreviation", "")).upper()
+                found_abbreviation = str(abbr_row.get("abbreviation", ""))
                 matched_term = str(abbr_row.get("matched_term", ""))
-                if found_abbreviation == suggested_abbreviation or matched_term == term:
+
+                if found_abbreviation.upper() == suggested_abbreviation or matched_term == term:
                     matched_items.append(abbr_row)
 
             if matched_items:
-                best_match = max(matched_items, key=lambda x: float(x.get("match_score", 0)))
+                best_match = max(
+                    matched_items,
+                    key=lambda x: (
+                        self._source_priority(str(x.get("detection_type", ""))),
+                        float(x.get("match_score", 0))
+                    )
+                )
                 rows.append({
                     "term": term,
                     "normalized_term": term_row["normalized_term"],
@@ -626,8 +711,7 @@ class Stage2ReductionAnalyzer:
                     "examples": term_row["examples"]
                 })
 
-        df = pd.DataFrame(rows)
-        return df.sort_values(
+        return pd.DataFrame(rows).sort_values(
             by=["abbreviation_found_in_text", "frequency", "word_count", "term"],
             ascending=[False, False, False, True]
         ).reset_index(drop=True)
@@ -673,7 +757,7 @@ class Stage2ReductionAnalyzer:
 
 
 if __name__ == "__main__":
-    input_docx = "test_reduction_input.docx"
+    input_docx = "input.docx"
     output_dir = "result_stage2"
 
     analyzer = Stage2ReductionAnalyzer()
