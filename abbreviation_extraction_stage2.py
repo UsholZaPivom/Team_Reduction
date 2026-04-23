@@ -3,26 +3,14 @@ from __future__ import annotations
 """
 abbreviation_extraction_stage2.py
 
-Этап 2 проекта:
-вычленение всех доступных к сокращению словоформ
-и уже имеющихся в документе аббревиатур.
-
-Финальная доработка:
-1. Поддерживает шаблоны:
-   - полная форма (АББР)
-   - полная форма (далее – АББР)
-   - АББР (полная форма)
-2. Извлекает сокращения из раздела "Обозначения и сокращения".
-3. Поддерживает mixed-case и multi-token сокращения:
-   - СрЗИ
-   - KICS for Nodes
-   - KSC / KSN
-4. Защищена от ложных parenthetical-случаев:
-   - ТСПД (включая беспроводные радиоканалы)
-5. Принудительно канонизирует термины по глоссарию:
-   - активное сетевое оборудование средства -> активное сетевое оборудование
-6. Гарантирует присутствие глоссарных терминов в итоговой merged-таблице
-   даже если этап 1 их не выделил или выделил шумно.
+Последний микро-фикс этапа 2:
+1. Надёжный резервный разбор строк глоссария даже если заголовок
+   "Обозначения и сокращения" не распознан как heading.
+2. Жёсткий запрет на abbr_first для скобок-уточнений вида:
+   "ТСПД (включая беспроводные радиоканалы)".
+3. Дополнительная очистка long_form для случаев:
+   "Состав технических средств" -> "технических средств".
+4. Гарантированное добавление глоссарных пар в merged.
 """
 
 from dataclasses import dataclass, asdict
@@ -541,55 +529,29 @@ class Stage2ReductionAnalyzer:
         self.abbreviation_extractor = ExistingAbbreviationExtractor()
 
     def _extract_glossary_abbreviations_from_fragments(self, fragments: List[TextFragment]) -> List[FoundAbbreviation]:
+        """
+        Надёжный разбор строк словаря:
+        работает и через заголовок раздела, и через резервный проход по коротким строкам
+        вида "АББР – полная форма".
+        """
         result: List[FoundAbbreviation] = []
         in_glossary = False
-        glossary_started = False
 
         for fragment in fragments:
             text = str(fragment.text).strip()
             lowered = text.lower()
 
-            if fragment.source_type == "heading" and "обозначения и сокращения" in lowered:
+            if "обозначения и сокращения" in lowered:
                 in_glossary = True
-                glossary_started = True
                 continue
 
-            if in_glossary:
-                if fragment.source_type == "heading" and "обозначения и сокращения" not in lowered:
-                    break
+            if in_glossary and fragment.source_type == "heading":
+                break
 
-                candidate_lines = [line.strip() for line in text.split("\n") if line.strip()] or [text]
+            candidate_lines = [line.strip() for line in text.split("\n") if line.strip()] or [text]
 
-                for line in candidate_lines:
-                    match = self.abbreviation_extractor.pattern_glossary_line.match(line)
-                    if not match:
-                        continue
-
-                    abbreviation = self.abbreviation_extractor._normalize_abbreviation(match.group("abbr"))
-                    long_form = self.abbreviation_extractor._clean_long_form(match.group("long"))
-
-                    if not self.abbreviation_extractor._is_valid_abbreviation(abbreviation):
-                        continue
-                    if len(self.abbreviation_extractor._extract_words(long_form)) < 1:
-                        continue
-
-                    result.append(
-                        FoundAbbreviation(
-                            abbreviation=abbreviation,
-                            long_form=long_form,
-                            detection_type="glossary_section",
-                            source_type=fragment.source_type,
-                            source_index=fragment.source_index,
-                            sentence=line,
-                            matched_term="",
-                            match_score=100.0
-                        )
-                    )
-
-        if not result:
-            for fragment in fragments:
-                text = str(fragment.text).strip()
-                match = self.abbreviation_extractor.pattern_glossary_line.match(text)
+            for line in candidate_lines:
+                match = self.abbreviation_extractor.pattern_glossary_line.match(line)
                 if not match:
                     continue
 
@@ -598,24 +560,26 @@ class Stage2ReductionAnalyzer:
 
                 if not self.abbreviation_extractor._is_valid_abbreviation(abbreviation):
                     continue
-                if len(self.abbreviation_extractor._extract_words(long_form)) < 1:
+
+                # Резервное правило: короткие строки с тире тоже считаем словарными,
+                # даже если heading не распознался как heading-style.
+                if len(line.split()) > 12 and not in_glossary:
                     continue
 
-                if len(text.split()) <= 12:
-                    result.append(
-                        FoundAbbreviation(
-                            abbreviation=abbreviation,
-                            long_form=long_form,
-                            detection_type="glossary_section",
-                            source_type=fragment.source_type,
-                            source_index=fragment.source_index,
-                            sentence=text,
-                            matched_term="",
-                            match_score=100.0
-                        )
+                result.append(
+                    FoundAbbreviation(
+                        abbreviation=abbreviation,
+                        long_form=long_form,
+                        detection_type="glossary_section",
+                        source_type=fragment.source_type,
+                        source_index=fragment.source_index,
+                        sentence=line,
+                        matched_term="",
+                        match_score=100.0
                     )
+                )
 
-        return self.abbreviation_extractor._deduplicate(result) if (glossary_started or result) else []
+        return self.abbreviation_extractor._deduplicate(result)
 
     def _source_priority(self, detection_type: str) -> int:
         priorities = {
@@ -668,12 +632,7 @@ class Stage2ReductionAnalyzer:
             abbr = self.abbreviation_extractor._normalize_abbreviation(item.abbreviation).upper()
             long_form = item.long_form.strip()
 
-            # Если уже есть запись с таким сокращением, но форма шумная,
-            # канонизируем её позже.
             if abbr in existing_by_abbr:
-                continue
-
-            if len(regex.findall(r"[A-Za-zА-Яа-яЁё-]+", long_form)) < 1:
                 continue
 
             additions.append({
@@ -693,11 +652,7 @@ class Stage2ReductionAnalyzer:
             ascending=[False, False, True]
         ).reset_index(drop=True)
 
-    def _canonicalize_terms_by_glossary(
-        self,
-        reducible_terms_df: pd.DataFrame,
-        found_abbreviations: List[FoundAbbreviation]
-    ) -> pd.DataFrame:
+    def _canonicalize_terms_by_glossary(self, reducible_terms_df: pd.DataFrame, found_abbreviations: List[FoundAbbreviation]) -> pd.DataFrame:
         if reducible_terms_df.empty:
             return reducible_terms_df
 
@@ -720,8 +675,6 @@ class Stage2ReductionAnalyzer:
                 canonical_tokens = self._token_set(canonical)
                 extra_tokens = term_tokens - canonical_tokens
 
-                # Для глоссарного сокращения всегда предпочитаем канонический термин,
-                # если текущий похож на него хотя бы умеренно.
                 if overlap >= 0.60 and len(extra_tokens) <= 2:
                     row["term"] = canonical
                     row["normalized_term"] = self._normalize_term_for_compare(canonical)
@@ -792,11 +745,7 @@ class Stage2ReductionAnalyzer:
             output_dir=output_dir
         )
 
-    def _extend_reducible_terms_with_declared_forms(
-        self,
-        reducible_terms_df: pd.DataFrame,
-        found_abbreviations: List[FoundAbbreviation]
-    ) -> pd.DataFrame:
+    def _extend_reducible_terms_with_declared_forms(self, reducible_terms_df: pd.DataFrame, found_abbreviations: List[FoundAbbreviation]) -> pd.DataFrame:
         rows = reducible_terms_df.to_dict("records") if not reducible_terms_df.empty else []
         existing_terms_normalized = {
             self._normalize_term_for_compare(str(row.get("term", "")))
@@ -849,11 +798,7 @@ class Stage2ReductionAnalyzer:
             ascending=[False, False, True]
         ).reset_index(drop=True)
 
-    def _match_abbreviations_to_terms(
-        self,
-        found_abbreviations: List[FoundAbbreviation],
-        reducible_terms_df: pd.DataFrame
-    ) -> List[FoundAbbreviation]:
+    def _match_abbreviations_to_terms(self, found_abbreviations: List[FoundAbbreviation], reducible_terms_df: pd.DataFrame) -> List[FoundAbbreviation]:
         if reducible_terms_df.empty:
             return found_abbreviations
 
@@ -913,12 +858,7 @@ class Stage2ReductionAnalyzer:
 
         return matched
 
-    def _build_merged_table(
-        self,
-        reducible_terms_df: pd.DataFrame,
-        existing_abbreviations_df: pd.DataFrame,
-        found_abbreviations: List[FoundAbbreviation]
-    ) -> pd.DataFrame:
+    def _build_merged_table(self, reducible_terms_df: pd.DataFrame, existing_abbreviations_df: pd.DataFrame, found_abbreviations: List[FoundAbbreviation]) -> pd.DataFrame:
         if reducible_terms_df.empty:
             return pd.DataFrame(columns=[
                 "term", "normalized_term", "suggested_abbreviation", "frequency",
@@ -939,8 +879,6 @@ class Stage2ReductionAnalyzer:
             term = str(term_row["term"]).strip()
             suggested_abbreviation = str(term_row["suggested_abbreviation"]).upper()
 
-            # Если для этого сокращения есть канонический термин из глоссария,
-            # используем его напрямую в merged.
             canonical_term = glossary_map.get(suggested_abbreviation)
             if canonical_term:
                 term = canonical_term
@@ -990,8 +928,6 @@ class Stage2ReductionAnalyzer:
 
             seen_abbrs.add(suggested_abbreviation)
 
-        # Гарантированно добавляем строки для всех глоссарных сокращений,
-        # которых вдруг нет после этапа 1 и этапа 2.
         for abbr, canonical_term in glossary_map.items():
             if abbr in seen_abbrs:
                 continue
@@ -1012,7 +948,6 @@ class Stage2ReductionAnalyzer:
         if df.empty:
             return df
 
-        # Схлопываем дубли по сокращению + канонической нормализованной форме.
         grouped = {}
         for row in df.to_dict("records"):
             key = (
@@ -1031,14 +966,7 @@ class Stage2ReductionAnalyzer:
             ascending=[False, False, False, True]
         ).reset_index(drop=True)
 
-    def _save_results(
-        self,
-        fragments_df: pd.DataFrame,
-        reducible_terms_df: pd.DataFrame,
-        existing_abbreviations_df: pd.DataFrame,
-        merged_df: pd.DataFrame,
-        output_dir: Path
-    ) -> Dict[str, Path]:
+    def _save_results(self, fragments_df: pd.DataFrame, reducible_terms_df: pd.DataFrame, existing_abbreviations_df: pd.DataFrame, merged_df: pd.DataFrame, output_dir: Path) -> Dict[str, Path]:
         saved_files: Dict[str, Path] = {}
 
         fragments_csv = output_dir / "document_fragments.csv"
