@@ -7,7 +7,7 @@ abbreviation_extraction_stage2.py
 вычленение всех доступных к сокращению словоформ
 и уже имеющихся в документе аббревиатур.
 
-Финальная версия:
+Финальная доработка:
 1. Поддерживает шаблоны:
    - полная форма (АББР)
    - полная форма (далее – АББР)
@@ -17,12 +17,12 @@ abbreviation_extraction_stage2.py
    - СрЗИ
    - KICS for Nodes
    - KSC / KSN
-4. Защищена от ложных parenthetical-случаев вида:
+4. Защищена от ложных parenthetical-случаев:
    - ТСПД (включая беспроводные радиоканалы)
 5. Принудительно канонизирует термины по глоссарию:
    - активное сетевое оборудование средства -> активное сетевое оборудование
-6. Гарантирует добавление глоссарных терминов в reducible_terms,
-   даже если этап 1 их не выделил или почти схлопнул.
+6. Гарантирует присутствие глоссарных терминов в итоговой merged-таблице
+   даже если этап 1 их не выделил или выделил шумно.
 """
 
 from dataclasses import dataclass, asdict
@@ -291,7 +291,7 @@ class ExistingAbbreviationExtractor:
         if not text:
             return True
         for marker in self.parenthetical_context_markers:
-            if text.startswith(marker):
+            if marker in text:
                 return True
         return False
 
@@ -652,10 +652,6 @@ class Stage2ReductionAnalyzer:
         reducible_terms_df: pd.DataFrame,
         found_abbreviations: List[FoundAbbreviation]
     ) -> pd.DataFrame:
-        """
-        Гарантированно добавляет все глоссарные термины в reducible_terms.
-        Это важно для KSN / KSC и подобных пар.
-        """
         rows = reducible_terms_df.to_dict("records") if not reducible_terms_df.empty else []
         existing_by_abbr = {
             str(row.get("suggested_abbreviation", "")).upper(): row
@@ -670,10 +666,13 @@ class Stage2ReductionAnalyzer:
                 continue
 
             abbr = self.abbreviation_extractor._normalize_abbreviation(item.abbreviation).upper()
+            long_form = item.long_form.strip()
+
+            # Если уже есть запись с таким сокращением, но форма шумная,
+            # канонизируем её позже.
             if abbr in existing_by_abbr:
                 continue
 
-            long_form = item.long_form.strip()
             if len(regex.findall(r"[A-Za-zА-Яа-яЁё-]+", long_form)) < 1:
                 continue
 
@@ -694,7 +693,11 @@ class Stage2ReductionAnalyzer:
             ascending=[False, False, True]
         ).reset_index(drop=True)
 
-    def _canonicalize_terms_by_glossary(self, reducible_terms_df: pd.DataFrame, found_abbreviations: List[FoundAbbreviation]) -> pd.DataFrame:
+    def _canonicalize_terms_by_glossary(
+        self,
+        reducible_terms_df: pd.DataFrame,
+        found_abbreviations: List[FoundAbbreviation]
+    ) -> pd.DataFrame:
         if reducible_terms_df.empty:
             return reducible_terms_df
 
@@ -709,16 +712,17 @@ class Stage2ReductionAnalyzer:
         for row in rows:
             term = str(row.get("term", "")).strip()
             suggested_abbreviation = str(row.get("suggested_abbreviation", "")).upper()
-
             canonical = glossary_map.get(suggested_abbreviation)
+
             if canonical:
                 overlap = self._word_overlap_ratio(term, canonical)
                 term_tokens = self._token_set(term)
                 canonical_tokens = self._token_set(canonical)
                 extra_tokens = term_tokens - canonical_tokens
 
-                # Если это тот же термин с шумовым хвостом — принудительно заменяем на канон.
-                if overlap >= 0.70 and len(extra_tokens) <= 1:
+                # Для глоссарного сокращения всегда предпочитаем канонический термин,
+                # если текущий похож на него хотя бы умеренно.
+                if overlap >= 0.60 and len(extra_tokens) <= 2:
                     row["term"] = canonical
                     row["normalized_term"] = self._normalize_term_for_compare(canonical)
                     row["word_count"] = len(regex.findall(r"[A-Za-zА-Яа-яЁё-]+", canonical))
@@ -732,8 +736,8 @@ class Stage2ReductionAnalyzer:
         grouped = {}
         for row in df.to_dict("records"):
             key = (
-                str(row.get("normalized_term", "")).strip().lower(),
                 str(row.get("suggested_abbreviation", "")).upper(),
+                str(row.get("normalized_term", "")).strip().lower(),
             )
             if key not in grouped:
                 grouped[key] = row.copy()
@@ -778,7 +782,7 @@ class Stage2ReductionAnalyzer:
         matched_abbreviations = self._match_abbreviations_to_terms(found_abbreviations, reducible_terms_df)
         existing_abbreviations_df = pd.DataFrame([asdict(item) for item in matched_abbreviations])
 
-        merged_df = self._build_merged_table(reducible_terms_df, existing_abbreviations_df)
+        merged_df = self._build_merged_table(reducible_terms_df, existing_abbreviations_df, found_abbreviations)
 
         return self._save_results(
             fragments_df=fragments_df,
@@ -819,8 +823,6 @@ class Stage2ReductionAnalyzer:
 
             is_near_duplicate = False
             for existing in existing_terms_normalized:
-                # Схлопываем почти одинаковые формы только если совпадает
-                # предполагаемая аббревиатура.
                 if fuzz.ratio(normalized_long_form, existing) >= 85:
                     if existing_by_abbr.get(suggested_abbreviation.upper()) == existing:
                         is_near_duplicate = True
@@ -914,7 +916,8 @@ class Stage2ReductionAnalyzer:
     def _build_merged_table(
         self,
         reducible_terms_df: pd.DataFrame,
-        existing_abbreviations_df: pd.DataFrame
+        existing_abbreviations_df: pd.DataFrame,
+        found_abbreviations: List[FoundAbbreviation]
     ) -> pd.DataFrame:
         if reducible_terms_df.empty:
             return pd.DataFrame(columns=[
@@ -924,10 +927,26 @@ class Stage2ReductionAnalyzer:
 
         existing_records = existing_abbreviations_df.to_dict("records") if not existing_abbreviations_df.empty else []
 
+        glossary_map = {}
+        for item in found_abbreviations:
+            if item.detection_type == "glossary_section" and item.long_form:
+                glossary_map[self.abbreviation_extractor._normalize_abbreviation(item.abbreviation).upper()] = item.long_form.strip()
+
         rows = []
+        seen_abbrs = set()
+
         for term_row in reducible_terms_df.to_dict("records"):
-            term = str(term_row["term"])
+            term = str(term_row["term"]).strip()
             suggested_abbreviation = str(term_row["suggested_abbreviation"]).upper()
+
+            # Если для этого сокращения есть канонический термин из глоссария,
+            # используем его напрямую в merged.
+            canonical_term = glossary_map.get(suggested_abbreviation)
+            if canonical_term:
+                term = canonical_term
+                term_row["term"] = canonical_term
+                term_row["normalized_term"] = self._normalize_term_for_compare(canonical_term)
+                term_row["word_count"] = len(regex.findall(r"[A-Za-zА-Яа-яЁё-]+", canonical_term))
 
             matched_items = []
             for abbr_row in existing_records:
@@ -963,13 +982,51 @@ class Stage2ReductionAnalyzer:
                     "suggested_abbreviation": suggested_abbreviation,
                     "word_count": term_row["word_count"],
                     "frequency": term_row["frequency"],
-                    "abbreviation_found_in_text": False,
-                    "found_abbreviation": "",
-                    "match_score": 0,
+                    "abbreviation_found_in_text": suggested_abbreviation in glossary_map,
+                    "found_abbreviation": suggested_abbreviation if suggested_abbreviation in glossary_map else "",
+                    "match_score": 100 if suggested_abbreviation in glossary_map else 0,
                     "examples": term_row["examples"]
                 })
 
-        return pd.DataFrame(rows).sort_values(
+            seen_abbrs.add(suggested_abbreviation)
+
+        # Гарантированно добавляем строки для всех глоссарных сокращений,
+        # которых вдруг нет после этапа 1 и этапа 2.
+        for abbr, canonical_term in glossary_map.items():
+            if abbr in seen_abbrs:
+                continue
+
+            rows.append({
+                "term": canonical_term,
+                "normalized_term": self._normalize_term_for_compare(canonical_term),
+                "suggested_abbreviation": abbr,
+                "word_count": len(regex.findall(r"[A-Za-zА-Яа-яЁё-]+", canonical_term)),
+                "frequency": 1,
+                "abbreviation_found_in_text": True,
+                "found_abbreviation": abbr,
+                "match_score": 100,
+                "examples": "Добавлено из раздела 'Обозначения и сокращения'"
+            })
+
+        df = pd.DataFrame(rows)
+        if df.empty:
+            return df
+
+        # Схлопываем дубли по сокращению + канонической нормализованной форме.
+        grouped = {}
+        for row in df.to_dict("records"):
+            key = (
+                str(row.get("suggested_abbreviation", "")).upper(),
+                str(row.get("normalized_term", "")).strip().lower()
+            )
+            if key not in grouped:
+                grouped[key] = row
+            else:
+                grouped[key]["frequency"] = max(int(grouped[key].get("frequency", 0)), int(row.get("frequency", 0)))
+                grouped[key]["abbreviation_found_in_text"] = bool(grouped[key].get("abbreviation_found_in_text", False)) or bool(row.get("abbreviation_found_in_text", False))
+                grouped[key]["match_score"] = max(float(grouped[key].get("match_score", 0)), float(row.get("match_score", 0)))
+
+        return pd.DataFrame(grouped.values()).sort_values(
             by=["abbreviation_found_in_text", "frequency", "word_count", "term"],
             ascending=[False, False, False, True]
         ).reset_index(drop=True)
