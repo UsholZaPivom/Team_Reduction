@@ -6,31 +6,11 @@ abbreviation_database.py
 Задача 1:
 единая база аббревиатур с накоплением и возможностью ручной корректировки.
 
-Что умеет модуль:
-1. Хранить единую базу аббревиатур в JSON.
-2. Подтягивать новые аббревиатуры из результатов этапа 2
-   (existing_abbreviations.csv).
-3. Обновлять существующие записи.
-4. Экспортировать базу в CSV/XLSX для ручной корректировки.
-5. Импортировать ручные исправления обратно в JSON.
-6. Искать записи по аббревиатуре и по полной форме.
-
-Формат записи в базе:
-- record_id
-- abbreviation
-- long_form
-- normalized_long_form
-- status
-- source_documents
-- source_detection_types
-- comment
-- created_at
-- updated_at
-
-Статусы:
-- active      : активная запись
-- edited      : вручную отредактированная
-- deprecated  : устаревшая / отключённая
+Исправления этой версии:
+1. Не добавляет в базу записи с пустой полной формой.
+2. Не добавляет записи, где long_form превращается в "nan".
+3. Корректно обрабатывает NaN из pandas при импорте CSV/XLSX.
+4. Отбрасывает standalone-записи без полной формы.
 """
 
 from dataclasses import dataclass, asdict, field
@@ -84,6 +64,35 @@ class AbbreviationDatabase:
 
     def _normalize_whitespace(self, text: str) -> str:
         return regex.sub(r"\s+", " ", str(text)).strip()
+
+    def _is_empty_like(self, value) -> bool:
+        """
+        Проверяет, является ли значение пустым / NaN-подобным.
+        """
+        if value is None:
+            return True
+
+        try:
+            if pd.isna(value):
+                return True
+        except Exception:
+            pass
+
+        text = str(value).strip()
+        if not text:
+            return True
+
+        lowered = text.lower()
+        return lowered in {"nan", "none", "null"}
+
+    def _safe_text(self, value) -> str:
+        """
+        Аккуратно преобразует значение в строку.
+        Пустые / NaN-подобные значения превращаются в пустую строку.
+        """
+        if self._is_empty_like(value):
+            return ""
+        return self._normalize_whitespace(value)
 
     def normalize_abbreviation(self, abbreviation: str) -> str:
         """
@@ -233,15 +242,22 @@ class AbbreviationDatabase:
 
         Возвращает:
         - "added"   если запись добавлена,
-        - "updated" если запись уже была и обновлена.
+        - "updated" если запись уже была и обновлена,
+        - "skipped" если запись пропущена.
         """
-        abbreviation = self.normalize_abbreviation(abbreviation)
-        long_form = self._normalize_whitespace(long_form)
+        abbreviation = self._safe_text(abbreviation)
+        long_form = self._safe_text(long_form)
+        detection_type = self._safe_text(detection_type)
+        source_document = self._safe_text(source_document)
+        comment = self._safe_text(comment)
 
         if not abbreviation or not long_form:
             return "skipped"
 
         normalized_long_form = self.normalize_long_form(long_form)
+        if not normalized_long_form:
+            return "skipped"
+
         record_id = self.build_record_id(abbreviation, long_form)
         existing_index = self._find_record_index(abbreviation, long_form)
 
@@ -264,7 +280,6 @@ class AbbreviationDatabase:
             self.records.append(record)
             return "added"
 
-        # Обновление существующей записи
         record = self.records[existing_index]
 
         if source_document and source_document not in record.source_documents:
@@ -299,25 +314,22 @@ class AbbreviationDatabase:
             if record.record_id != record_id:
                 continue
 
-            if abbreviation is not None:
+            if abbreviation is not None and not self._is_empty_like(abbreviation):
                 record.abbreviation = self.normalize_abbreviation(abbreviation)
 
-            if long_form is not None:
-                record.long_form = self._normalize_whitespace(long_form)
+            if long_form is not None and not self._is_empty_like(long_form):
+                record.long_form = self._safe_text(long_form)
                 record.normalized_long_form = self.normalize_long_form(long_form)
 
-            if status is not None:
-                record.status = status
+            if status is not None and not self._is_empty_like(status):
+                record.status = self._safe_text(status)
 
             if comment is not None:
-                record.comment = comment
+                record.comment = self._safe_text(comment)
 
-            # После ручного редактирования обновляем record_id,
-            # чтобы он соответствовал новой паре.
             record.record_id = self.build_record_id(record.abbreviation, record.long_form)
             record.updated_at = self._now()
 
-            # Статус ручной правки
             if record.status == "active":
                 record.status = "edited"
 
@@ -342,7 +354,8 @@ class AbbreviationDatabase:
         - abbreviation
         - long_form
 
-        Пустые long_form пропускаются.
+        Пустые / NaN long_form пропускаются.
+        Также пропускаются standalone-записи без полной формы.
         """
         csv_path = Path(csv_path)
         if not csv_path.exists():
@@ -363,11 +376,22 @@ class AbbreviationDatabase:
         skipped = 0
 
         for _, row in df.iterrows():
-            abbreviation = str(row.get("abbreviation", "")).strip()
-            long_form = str(row.get("long_form", "")).strip()
-            detection_type = str(row.get("detection_type", "")).strip()
+            abbreviation = self._safe_text(row.get("abbreviation", ""))
+            long_form = self._safe_text(row.get("long_form", ""))
+            detection_type = self._safe_text(row.get("detection_type", ""))
 
+            # Пропускаем standalone без полной формы
+            if detection_type == "standalone" and not long_form:
+                skipped += 1
+                continue
+
+            # Пропускаем любые записи без нормальной полной формы
             if not abbreviation or not long_form:
+                skipped += 1
+                continue
+
+            normalized_long_form = self.normalize_long_form(long_form)
+            if not normalized_long_form:
                 skipped += 1
                 continue
 
@@ -458,17 +482,21 @@ class AbbreviationDatabase:
         not_found = 0
 
         for _, row in df.iterrows():
-            record_id = str(row.get("record_id", "")).strip()
-            abbreviation = str(row.get("abbreviation", "")).strip()
-            long_form = str(row.get("long_form", "")).strip()
-            status = str(row.get("status", "")).strip()
-            comment = str(row.get("comment", "")).strip()
+            record_id = self._safe_text(row.get("record_id", ""))
+            abbreviation = row.get("abbreviation", "")
+            long_form = row.get("long_form", "")
+            status = row.get("status", "")
+            comment = row.get("comment", "")
+
+            if not record_id:
+                not_found += 1
+                continue
 
             ok = self.update_record_manually(
                 record_id=record_id,
                 abbreviation=abbreviation,
                 long_form=long_form,
-                status=status if status else None,
+                status=status if not self._is_empty_like(status) else None,
                 comment=comment
             )
             if ok:
