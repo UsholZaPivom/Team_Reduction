@@ -2,6 +2,9 @@
 .venv/
 venv/
 
+# Логи
+*.log
+
 # Кэш Python
 __pycache__/
 *.pyc
