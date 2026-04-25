@@ -1,0 +1,237 @@
+{
+  "database_path": "abbreviation_database\\abbreviation_database.json",
+  "updated_at": "2026-04-25 18:22:15",
+  "records_count": 13,
+  "records": [
+    {
+      "record_id": "АСО__активное_сетевое_оборудование",
+      "abbreviation": "АСО",
+      "long_form": "активное сетевое оборудование",
+      "normalized_long_form": "активное сетевое оборудование",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "standalone",
+        "declared_long_dalee"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "ЗОКИИ__значимый_объект_критической_информационной_инфраструктуры",
+      "abbreviation": "ЗОКИИ",
+      "long_form": "значимый объект критической информационной инфраструктуры",
+      "normalized_long_form": "значимый объект критической информационной инфраструктуры",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "standalone",
+        "declared_long_dalee"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "ИБ__информационная_безопасность",
+      "abbreviation": "ИБ",
+      "long_form": "информационная безопасность",
+      "normalized_long_form": "информационная безопасность",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "standalone",
+        "declared_long_dalee"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "ОС__операционная_система",
+      "abbreviation": "ОС",
+      "long_form": "операционная система",
+      "normalized_long_form": "операционная система",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "standalone",
+        "declared_long_dalee"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "ПО__программное_обеспечение",
+      "abbreviation": "ПО",
+      "long_form": "программное обеспечение",
+      "normalized_long_form": "программное обеспечение",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "standalone",
+        "declared_long_dalee"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "ПЛК__програмируемый_логический_контроллер",
+      "abbreviation": "ПЛК",
+      "long_form": "програмируемый логический контроллер",
+      "normalized_long_form": "програмируемый логический контроллер",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "standalone",
+        "declared_long_dalee"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "САЗ__средство_антивирусной_защиты",
+      "abbreviation": "САЗ",
+      "long_form": "средство антивирусной защиты",
+      "normalized_long_form": "средство антивирусной защиты",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "standalone",
+        "declared_long_dalee"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "СРЗИ__средство_защиты_информации",
+      "abbreviation": "СрЗИ",
+      "long_form": "средство защиты информации",
+      "normalized_long_form": "средство защиты информации",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "declared_long_first"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "СРКВ__средство_резервного_копирования_и_восстановления",
+      "abbreviation": "СРКВ",
+      "long_form": "средство резервного копирования и восстановления",
+      "normalized_long_form": "средство резервного копирования и восстановления",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "standalone",
+        "declared_long_dalee"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "СУРТ__система_управления_рельсовым_транспортом",
+      "abbreviation": "СУРТ",
+      "long_form": "система управления рельсовым транспортом",
+      "normalized_long_form": "система управления рельсовым транспортом",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "standalone",
+        "declared_long_dalee"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "KICS FOR NODES__kaspersky_industrial_cybersecurity_for_nodes",
+      "abbreviation": "KICS for Nodes",
+      "long_form": "Kaspersky Industrial CyberSecurity for Nodes",
+      "normalized_long_form": "kaspersky industrial cybersecurity for nodes",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "declared_long_dalee"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "KSC__kaspersky_security_center",
+      "abbreviation": "KSC",
+      "long_form": "Kaspersky Security Center",
+      "normalized_long_form": "kaspersky security center",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "standalone"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    },
+    {
+      "record_id": "KSN__kaspersky_security_network",
+      "abbreviation": "KSN",
+      "long_form": "Kaspersky Security Network",
+      "normalized_long_form": "kaspersky security network",
+      "status": "active",
+      "source_documents": [
+        "result_all\\stage2\\existing_abbreviations.csv"
+      ],
+      "source_detection_types": [
+        "glossary_section",
+        "standalone"
+      ],
+      "comment": "",
+      "created_at": "2026-04-25 18:18:39",
+      "updated_at": "2026-04-25 18:22:15"
+    }
+  ]
+}

@@ -3,14 +3,19 @@ from __future__ import annotations
 """
 abbreviation_database.py
 
-Задача 1:
-единая база аббревиатур с накоплением и возможностью ручной корректировки.
+Микро-фикс для задачи 1:
+1. При загрузке базы автоматически удаляются старые мусорные записи:
+   - long_form == ""
+   - long_form == "nan"
+   - normalized_long_form == ""
+   - normalized_long_form == "nan"
+2. Перед сохранением база ещё раз самоочищается.
+3. После импорта из existing_abbreviations.csv база тоже очищается.
 
-Исправления этой версии:
-1. Не добавляет в базу записи с пустой полной формой.
-2. Не добавляет записи, где long_form превращается в "nan".
-3. Корректно обрабатывает NaN из pandas при импорте CSV/XLSX.
-4. Отбрасывает standalone-записи без полной формы.
+Это позволяет:
+- не удалять JSON вручную;
+- убрать старые неправильные записи из прошлых запусков;
+- сохранить только корректные пары "аббревиатура -> полная форма".
 """
 
 from dataclasses import dataclass, asdict, field
@@ -25,9 +30,6 @@ import regex
 
 @dataclass
 class AbbreviationRecord:
-    """
-    Одна запись в единой базе аббревиатур.
-    """
     record_id: str
     abbreviation: str
     long_form: str
@@ -44,13 +46,6 @@ class AbbreviationRecord:
 
 
 class AbbreviationDatabase:
-    """
-    Единая база аббревиатур.
-
-    Основное хранилище — JSON-файл.
-    Дополнительно база может экспортироваться в CSV/XLSX для ручной правки.
-    """
-
     def __init__(self, db_path: str | Path = "abbreviation_database.json") -> None:
         self.db_path = Path(db_path)
         self.records: List[AbbreviationRecord] = []
@@ -66,9 +61,6 @@ class AbbreviationDatabase:
         return regex.sub(r"\s+", " ", str(text)).strip()
 
     def _is_empty_like(self, value) -> bool:
-        """
-        Проверяет, является ли значение пустым / NaN-подобным.
-        """
         if value is None:
             return True
 
@@ -82,48 +74,28 @@ class AbbreviationDatabase:
         if not text:
             return True
 
-        lowered = text.lower()
-        return lowered in {"nan", "none", "null"}
+        return text.lower() in {"nan", "none", "null"}
 
     def _safe_text(self, value) -> str:
-        """
-        Аккуратно преобразует значение в строку.
-        Пустые / NaN-подобные значения превращаются в пустую строку.
-        """
         if self._is_empty_like(value):
             return ""
         return self._normalize_whitespace(value)
 
     def normalize_abbreviation(self, abbreviation: str) -> str:
-        """
-        Нормализует сокращение:
-        - убирает лишние пробелы,
-        - сохраняет регистр как есть,
-        - для поиска чаще используется upper().
-        """
         return self._normalize_whitespace(abbreviation)
 
     def normalize_long_form(self, long_form: str) -> str:
-        """
-        Нормализует полную форму для сравнения и поиска.
-        """
         text = self._normalize_whitespace(long_form).lower()
         text = text.strip(" ,.;:()[]{}\"'«»")
         return text
 
     def build_record_id(self, abbreviation: str, long_form: str) -> str:
-        """
-        Формирует устойчивый идентификатор записи.
-        """
         abbr = self.normalize_abbreviation(abbreviation).upper()
         norm_long = self.normalize_long_form(long_form)
         safe_long = regex.sub(r"[^a-zа-яё0-9]+", "_", norm_long, flags=regex.IGNORECASE).strip("_")
         return f"{abbr}__{safe_long}"
 
     def _find_record_index(self, abbreviation: str, long_form: str) -> Optional[int]:
-        """
-        Ищет точное совпадение по аббревиатуре и полной форме.
-        """
         normalized_abbreviation = self.normalize_abbreviation(abbreviation).upper()
         normalized_long_form = self.normalize_long_form(long_form)
 
@@ -135,15 +107,84 @@ class AbbreviationDatabase:
                 return idx
         return None
 
+    def _is_valid_record(self, record: AbbreviationRecord) -> bool:
+        abbreviation = self._safe_text(record.abbreviation)
+        long_form = self._safe_text(record.long_form)
+        normalized_long_form = self._safe_text(record.normalized_long_form)
+
+        if not abbreviation:
+            return False
+        if not long_form:
+            return False
+
+        recalculated_normalized = self.normalize_long_form(long_form)
+        if not recalculated_normalized:
+            return False
+
+        if normalized_long_form and normalized_long_form != recalculated_normalized:
+            record.normalized_long_form = recalculated_normalized
+        elif not normalized_long_form:
+            record.normalized_long_form = recalculated_normalized
+
+        record.abbreviation = abbreviation
+        record.long_form = long_form
+        record.record_id = self.build_record_id(record.abbreviation, record.long_form)
+        return True
+
+    def clean_invalid_records(self) -> Dict[str, int]:
+        """
+        Самоочистка базы от старых мусорных записей.
+        Удаляет записи с пустой/некорректной полной формой.
+        """
+        before = len(self.records)
+        cleaned_records: List[AbbreviationRecord] = []
+
+        for record in self.records:
+            if self._is_valid_record(record):
+                cleaned_records.append(record)
+
+        # Дополнительно схлопываем возможные дубли после очистки
+        dedup = {}
+        for record in cleaned_records:
+            key = (
+                self.normalize_abbreviation(record.abbreviation).upper(),
+                self.normalize_long_form(record.long_form),
+            )
+            if key not in dedup:
+                dedup[key] = record
+            else:
+                existing = dedup[key]
+
+                for doc in record.source_documents:
+                    if doc and doc not in existing.source_documents:
+                        existing.source_documents.append(doc)
+
+                for det in record.source_detection_types:
+                    if det and det not in existing.source_detection_types:
+                        existing.source_detection_types.append(det)
+
+                if record.comment and not existing.comment:
+                    existing.comment = record.comment
+
+                existing.updated_at = max(
+                    self._safe_text(existing.updated_at),
+                    self._safe_text(record.updated_at)
+                )
+
+        self.records = list(dedup.values())
+        after = len(self.records)
+
+        return {
+            "before": before,
+            "after": after,
+            "removed": before - after,
+        }
+
     # -----------------------------------------------------------------
     # Загрузка / сохранение
     # -----------------------------------------------------------------
 
     def load(self) -> None:
-        """
-        Загружает JSON-базу.
-        Если файла нет, создаётся пустая база в памяти.
-        """
         if not self.db_path.exists():
             self.records = []
             return
@@ -153,11 +194,10 @@ class AbbreviationDatabase:
 
         records_raw = raw.get("records", [])
         self.records = [AbbreviationRecord(**item) for item in records_raw]
+        self.clean_invalid_records()
 
     def save(self) -> None:
-        """
-        Сохраняет базу в JSON.
-        """
+        self.clean_invalid_records()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         payload = {
@@ -175,9 +215,8 @@ class AbbreviationDatabase:
     # -----------------------------------------------------------------
 
     def to_dataframe(self) -> pd.DataFrame:
-        """
-        Преобразует базу в DataFrame.
-        """
+        self.clean_invalid_records()
+
         if not self.records:
             return pd.DataFrame(columns=[
                 "record_id",
@@ -202,9 +241,6 @@ class AbbreviationDatabase:
         return pd.DataFrame(rows)
 
     def find_by_abbreviation(self, abbreviation: str) -> pd.DataFrame:
-        """
-        Ищет записи по аббревиатуре.
-        """
         df = self.to_dataframe()
         if df.empty:
             return df
@@ -213,9 +249,6 @@ class AbbreviationDatabase:
         return df[df["abbreviation"].astype(str).str.upper() == target].reset_index(drop=True)
 
     def find_by_long_form(self, long_form: str) -> pd.DataFrame:
-        """
-        Ищет записи по полной форме.
-        """
         df = self.to_dataframe()
         if df.empty:
             return df
@@ -237,14 +270,6 @@ class AbbreviationDatabase:
         comment: str = "",
         force_update_comment: bool = False
     ) -> str:
-        """
-        Добавляет новую запись или обновляет существующую.
-
-        Возвращает:
-        - "added"   если запись добавлена,
-        - "updated" если запись уже была и обновлена,
-        - "skipped" если запись пропущена.
-        """
         abbreviation = self._safe_text(abbreviation)
         long_form = self._safe_text(long_form)
         detection_type = self._safe_text(detection_type)
@@ -307,9 +332,6 @@ class AbbreviationDatabase:
         status: Optional[str] = None,
         comment: Optional[str] = None
     ) -> bool:
-        """
-        Ручное обновление записи внутри программы.
-        """
         for idx, record in enumerate(self.records):
             if record.record_id != record_id:
                 continue
@@ -327,7 +349,9 @@ class AbbreviationDatabase:
             if comment is not None:
                 record.comment = self._safe_text(comment)
 
-            record.record_id = self.build_record_id(record.abbreviation, record.long_form)
+            if not self._is_valid_record(record):
+                return False
+
             record.updated_at = self._now()
 
             if record.status == "active":
@@ -347,16 +371,6 @@ class AbbreviationDatabase:
         csv_path: str | Path,
         source_document: str = ""
     ) -> Dict[str, int]:
-        """
-        Импортирует сокращения из existing_abbreviations.csv.
-
-        Загружаются только строки, где есть:
-        - abbreviation
-        - long_form
-
-        Пустые / NaN long_form пропускаются.
-        Также пропускаются standalone-записи без полной формы.
-        """
         csv_path = Path(csv_path)
         if not csv_path.exists():
             raise FileNotFoundError(f"Файл не найден: {csv_path}")
@@ -380,12 +394,10 @@ class AbbreviationDatabase:
             long_form = self._safe_text(row.get("long_form", ""))
             detection_type = self._safe_text(row.get("detection_type", ""))
 
-            # Пропускаем standalone без полной формы
             if detection_type == "standalone" and not long_form:
                 skipped += 1
                 continue
 
-            # Пропускаем любые записи без нормальной полной формы
             if not abbreviation or not long_form:
                 skipped += 1
                 continue
@@ -410,10 +422,13 @@ class AbbreviationDatabase:
             else:
                 skipped += 1
 
+        cleanup_stats = self.clean_invalid_records()
+
         return {
             "added": added,
             "updated": updated,
             "skipped": skipped,
+            "removed_invalid": int(cleanup_stats.get("removed", 0)),
         }
 
     # -----------------------------------------------------------------
@@ -421,9 +436,6 @@ class AbbreviationDatabase:
     # -----------------------------------------------------------------
 
     def export_for_manual_edit(self, output_dir: str | Path = "abbreviation_database_export") -> Dict[str, Path]:
-        """
-        Экспортирует базу в CSV/XLSX, чтобы пользователь мог вручную её править.
-        """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -447,17 +459,6 @@ class AbbreviationDatabase:
         return saved_files
 
     def import_manual_corrections(self, edited_file_path: str | Path) -> Dict[str, int]:
-        """
-        Импортирует ручные исправления из CSV/XLSX,
-        которые были отредактированы пользователем.
-
-        Ожидаемые столбцы:
-        - record_id
-        - abbreviation
-        - long_form
-        - status
-        - comment
-        """
         edited_file_path = Path(edited_file_path)
         if not edited_file_path.exists():
             raise FileNotFoundError(f"Файл не найден: {edited_file_path}")
@@ -504,9 +505,12 @@ class AbbreviationDatabase:
             else:
                 not_found += 1
 
+        cleanup_stats = self.clean_invalid_records()
+
         return {
             "updated": updated,
             "not_found": not_found,
+            "removed_invalid": int(cleanup_stats.get("removed", 0)),
         }
 
     # -----------------------------------------------------------------
@@ -514,9 +518,6 @@ class AbbreviationDatabase:
     # -----------------------------------------------------------------
 
     def build_summary(self) -> pd.DataFrame:
-        """
-        Формирует краткую сводку по базе.
-        """
         df = self.to_dataframe()
         if df.empty:
             return pd.DataFrame([{
@@ -538,14 +539,6 @@ class AbbreviationDatabase:
 
 
 if __name__ == "__main__":
-    """
-    Пример автономного запуска:
-
-    1. Если рядом есть result_stage2/existing_abbreviations.csv,
-       база пополнится из него.
-    2. JSON-файл базы будет сохранён как abbreviation_database.json
-    3. Также будет экспортирована версия для ручной корректировки.
-    """
     db = AbbreviationDatabase("abbreviation_database.json")
     db.load()
 
@@ -557,6 +550,10 @@ if __name__ == "__main__":
         )
         print("Импорт из existing_abbreviations.csv:")
         print(stats)
+
+    cleanup = db.clean_invalid_records()
+    print("Самоочистка базы:")
+    print(cleanup)
 
     db.save()
     print(f"JSON-база сохранена: {db.db_path}")
