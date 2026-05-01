@@ -46,7 +46,6 @@ replacement_stage/
 
 # Экспорт и база аббревиатур
 abbreviation_database/
-abbreviation_database.json
 abbreviation_database_export/
 
 # Сформированные документы
@@ -65,20 +64,12 @@ abbreviation_database_export/
 # Артефакты сборки exe
 build/
 dist/
-*.spec
-
-# Если используете PyInstaller
 *.manifest
 
-
-# Папка со сборкой для куратора
+# Папки и файлы сборки для куратора
 ТЕСТ ДЛЯ КУРАТОРА/
-
-# Локальные папки со сборками приложения
 ReductionApp/
 _internal/
-
-# Дополнительные артефакты Windows-сборки
 *.exe
 *.dll
 
