@@ -3,29 +3,35 @@ from __future__ import annotations
 """
 abbreviation_database.py
 
-Микро-фикс для задачи 1:
-1. При загрузке базы автоматически удаляются старые мусорные записи:
-   - long_form == ""
-   - long_form == "nan"
-   - normalized_long_form == ""
-   - normalized_long_form == "nan"
-2. Перед сохранением база ещё раз самоочищается.
-3. После импорта из existing_abbreviations.csv база тоже очищается.
+Модуль ведения единой базы аббревиатур.
 
-Это позволяет:
-- не удалять JSON вручную;
-- убрать старые неправильные записи из прошлых запусков;
-- сохранить только корректные пары "аббревиатура -> полная форма".
+Что делает модуль:
+1. Хранит единую базу сокращений в JSON.
+2. Обновляет базу на основе existing_abbreviations.csv после этапа 2.
+3. Выполняет самоочистку базы от некорректных записей.
+4. Экспортирует базу в CSV/XLSX для ручной корректировки.
+5. Импортирует ручные правки обратно в JSON-базу.
+
+Основные поля записи:
+- record_id
+- abbreviation
+- long_form
+- normalized_long_form
+- status
+- source_documents
+- source_detection_types
+- comment
+- created_at
+- updated_at
 """
 
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
-import json
+from typing import Any
 
+import json
 import pandas as pd
-import regex
 
 
 @dataclass
@@ -34,350 +40,144 @@ class AbbreviationRecord:
     abbreviation: str
     long_form: str
     normalized_long_form: str
-    status: str = "active"
-    source_documents: List[str] = field(default_factory=list)
-    source_detection_types: List[str] = field(default_factory=list)
-    comment: str = ""
-    created_at: str = ""
-    updated_at: str = ""
-
-    def to_dict(self) -> dict:
-        return asdict(self)
+    status: str
+    source_documents: list[str]
+    source_detection_types: list[str]
+    comment: str
+    created_at: str
+    updated_at: str
 
 
 class AbbreviationDatabase:
-    def __init__(self, db_path: str | Path = "abbreviation_database.json") -> None:
-        self.db_path = Path(db_path)
-        self.records: List[AbbreviationRecord] = []
+    """
+    Единая база аббревиатур.
 
-    # -----------------------------------------------------------------
-    # Вспомогательные методы
-    # -----------------------------------------------------------------
+    Поддерживает:
+    - загрузку и сохранение JSON;
+    - обновление из existing_abbreviations.csv;
+    - очистку от некорректных записей;
+    - экспорт для ручной корректировки;
+    - импорт ручных исправлений обратно в JSON.
+    """
 
-    def _now(self) -> str:
+    def __init__(self, database_path: str | Path) -> None:
+        self.database_path = Path(database_path)
+        self.records: list[dict[str, Any]] = []
+        self.updated_at: str = ""
+
+    @staticmethod
+    def _now_str() -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    def _normalize_whitespace(self, text: str) -> str:
-        return regex.sub(r"\s+", " ", str(text)).strip()
-
-    def _is_empty_like(self, value) -> bool:
-        if value is None:
-            return True
-
-        try:
-            if pd.isna(value):
-                return True
-        except Exception:
-            pass
-
+    @staticmethod
+    def _clean_text(value: Any) -> str:
         text = str(value).strip()
         if not text:
-            return True
-
-        return text.lower() in {"nan", "none", "null"}
-
-    def _safe_text(self, value) -> str:
-        if self._is_empty_like(value):
             return ""
-        return self._normalize_whitespace(value)
+        return " ".join(text.split())
 
-    def normalize_abbreviation(self, abbreviation: str) -> str:
-        return self._normalize_whitespace(abbreviation)
+    @classmethod
+    def _normalize_long_form(cls, value: Any) -> str:
+        text = cls._clean_text(value)
+        if not text:
+            return ""
+        return text.lower()
 
-    def normalize_long_form(self, long_form: str) -> str:
-        text = self._normalize_whitespace(long_form).lower()
-        text = text.strip(" ,.;:()[]{}\"'«»")
-        return text
+    @staticmethod
+    def _normalize_abbreviation_for_record_id(value: Any) -> str:
+        text = str(value).strip()
+        if not text:
+            return ""
+        return " ".join(text.split()).upper()
 
-    def build_record_id(self, abbreviation: str, long_form: str) -> str:
-        abbr = self.normalize_abbreviation(abbreviation).upper()
-        norm_long = self.normalize_long_form(long_form)
-        safe_long = regex.sub(r"[^a-zа-яё0-9]+", "_", norm_long, flags=regex.IGNORECASE).strip("_")
-        return f"{abbr}__{safe_long}"
+    @classmethod
+    def _make_record_id(cls, abbreviation: str, normalized_long_form: str) -> str:
+        abbr_part = cls._normalize_abbreviation_for_record_id(abbreviation)
+        form_part = normalized_long_form.replace(" ", "_")
+        return f"{abbr_part}__{form_part}"
 
-    def _find_record_index(self, abbreviation: str, long_form: str) -> Optional[int]:
-        normalized_abbreviation = self.normalize_abbreviation(abbreviation).upper()
-        normalized_long_form = self.normalize_long_form(long_form)
+    def _records_map(self) -> dict[str, dict[str, Any]]:
+        return {record["record_id"]: record for record in self.records}
 
-        for idx, record in enumerate(self.records):
-            if (
-                self.normalize_abbreviation(record.abbreviation).upper() == normalized_abbreviation
-                and record.normalized_long_form == normalized_long_form
-            ):
-                return idx
-        return None
-
-    def _is_valid_record(self, record: AbbreviationRecord) -> bool:
-        abbreviation = self._safe_text(record.abbreviation)
-        long_form = self._safe_text(record.long_form)
-        normalized_long_form = self._safe_text(record.normalized_long_form)
-
-        if not abbreviation:
-            return False
-        if not long_form:
-            return False
-
-        recalculated_normalized = self.normalize_long_form(long_form)
-        if not recalculated_normalized:
-            return False
-
-        if normalized_long_form and normalized_long_form != recalculated_normalized:
-            record.normalized_long_form = recalculated_normalized
-        elif not normalized_long_form:
-            record.normalized_long_form = recalculated_normalized
-
-        record.abbreviation = abbreviation
-        record.long_form = long_form
-        record.record_id = self.build_record_id(record.abbreviation, record.long_form)
-        return True
-
-    def clean_invalid_records(self) -> Dict[str, int]:
-        """
-        Самоочистка базы от старых мусорных записей.
-        Удаляет записи с пустой/некорректной полной формой.
-        """
-        before = len(self.records)
-        cleaned_records: List[AbbreviationRecord] = []
-
-        for record in self.records:
-            if self._is_valid_record(record):
-                cleaned_records.append(record)
-
-        # Дополнительно схлопываем возможные дубли после очистки
-        dedup = {}
-        for record in cleaned_records:
-            key = (
-                self.normalize_abbreviation(record.abbreviation).upper(),
-                self.normalize_long_form(record.long_form),
+    def _sort_records(self) -> None:
+        self.records.sort(
+            key=lambda item: (
+                str(item.get("abbreviation", "")).lower(),
+                str(item.get("long_form", "")).lower(),
             )
-            if key not in dedup:
-                dedup[key] = record
-            else:
-                existing = dedup[key]
-
-                for doc in record.source_documents:
-                    if doc and doc not in existing.source_documents:
-                        existing.source_documents.append(doc)
-
-                for det in record.source_detection_types:
-                    if det and det not in existing.source_detection_types:
-                        existing.source_detection_types.append(det)
-
-                if record.comment and not existing.comment:
-                    existing.comment = record.comment
-
-                existing.updated_at = max(
-                    self._safe_text(existing.updated_at),
-                    self._safe_text(record.updated_at)
-                )
-
-        self.records = list(dedup.values())
-        after = len(self.records)
-
-        return {
-            "before": before,
-            "after": after,
-            "removed": before - after,
-        }
-
-    # -----------------------------------------------------------------
-    # Загрузка / сохранение
-    # -----------------------------------------------------------------
+        )
 
     def load(self) -> None:
-        if not self.db_path.exists():
+        if not self.database_path.exists():
             self.records = []
+            self.updated_at = ""
             return
 
-        with self.db_path.open("r", encoding="utf-8") as f:
-            raw = json.load(f)
+        with open(self.database_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
-        records_raw = raw.get("records", [])
-        self.records = [AbbreviationRecord(**item) for item in records_raw]
-        self.clean_invalid_records()
+        self.records = data.get("records", [])
+        self.updated_at = data.get("updated_at", "")
+
+    load_database = load
+    read = load
 
     def save(self) -> None:
-        self.clean_invalid_records()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.updated_at = self._now_str()
+        self._sort_records()
 
-        payload = {
-            "database_path": str(self.db_path),
-            "updated_at": self._now(),
+        data = {
+            "database_path": str(self.database_path).replace("/", "\\"),
+            "updated_at": self.updated_at,
             "records_count": len(self.records),
-            "records": [record.to_dict() for record in self.records],
+            "records": self.records,
         }
 
-        with self.db_path.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        with open(self.database_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
-    # -----------------------------------------------------------------
-    # Просмотр базы
-    # -----------------------------------------------------------------
+    save_database = save
+    write = save
 
     def to_dataframe(self) -> pd.DataFrame:
-        self.clean_invalid_records()
-
         if not self.records:
-            return pd.DataFrame(columns=[
-                "record_id",
-                "abbreviation",
-                "long_form",
-                "normalized_long_form",
-                "status",
-                "source_documents",
-                "source_detection_types",
-                "comment",
-                "created_at",
-                "updated_at",
-            ])
-
-        rows = []
-        for record in self.records:
-            row = record.to_dict()
-            row["source_documents"] = " || ".join(record.source_documents)
-            row["source_detection_types"] = " || ".join(record.source_detection_types)
-            rows.append(row)
-
-        return pd.DataFrame(rows)
-
-    def find_by_abbreviation(self, abbreviation: str) -> pd.DataFrame:
-        df = self.to_dataframe()
-        if df.empty:
-            return df
-
-        target = self.normalize_abbreviation(abbreviation).upper()
-        return df[df["abbreviation"].astype(str).str.upper() == target].reset_index(drop=True)
-
-    def find_by_long_form(self, long_form: str) -> pd.DataFrame:
-        df = self.to_dataframe()
-        if df.empty:
-            return df
-
-        target = self.normalize_long_form(long_form)
-        return df[df["normalized_long_form"].astype(str) == target].reset_index(drop=True)
-
-    # -----------------------------------------------------------------
-    # Добавление / обновление
-    # -----------------------------------------------------------------
-
-    def add_or_update_record(
-        self,
-        abbreviation: str,
-        long_form: str,
-        source_document: str = "",
-        detection_type: str = "",
-        status: str = "active",
-        comment: str = "",
-        force_update_comment: bool = False
-    ) -> str:
-        abbreviation = self._safe_text(abbreviation)
-        long_form = self._safe_text(long_form)
-        detection_type = self._safe_text(detection_type)
-        source_document = self._safe_text(source_document)
-        comment = self._safe_text(comment)
-
-        if not abbreviation or not long_form:
-            return "skipped"
-
-        normalized_long_form = self.normalize_long_form(long_form)
-        if not normalized_long_form:
-            return "skipped"
-
-        record_id = self.build_record_id(abbreviation, long_form)
-        existing_index = self._find_record_index(abbreviation, long_form)
-
-        if existing_index is None:
-            created_at = self._now()
-            updated_at = created_at
-
-            record = AbbreviationRecord(
-                record_id=record_id,
-                abbreviation=abbreviation,
-                long_form=long_form,
-                normalized_long_form=normalized_long_form,
-                status=status,
-                source_documents=[source_document] if source_document else [],
-                source_detection_types=[detection_type] if detection_type else [],
-                comment=comment,
-                created_at=created_at,
-                updated_at=updated_at,
+            return pd.DataFrame(
+                columns=[
+                    "record_id",
+                    "abbreviation",
+                    "long_form",
+                    "normalized_long_form",
+                    "status",
+                    "source_documents",
+                    "source_detection_types",
+                    "comment",
+                    "created_at",
+                    "updated_at",
+                ]
             )
-            self.records.append(record)
-            return "added"
 
-        record = self.records[existing_index]
+        df = pd.DataFrame(self.records).copy()
 
-        if source_document and source_document not in record.source_documents:
-            record.source_documents.append(source_document)
+        if "source_documents" in df.columns:
+            df["source_documents"] = df["source_documents"].apply(
+                lambda value: "; ".join(value) if isinstance(value, list) else str(value)
+            )
+        if "source_detection_types" in df.columns:
+            df["source_detection_types"] = df["source_detection_types"].apply(
+                lambda value: "; ".join(value) if isinstance(value, list) else str(value)
+            )
 
-        if detection_type and detection_type not in record.source_detection_types:
-            record.source_detection_types.append(detection_type)
+        return df
 
-        if status:
-            record.status = status
-
-        if force_update_comment:
-            record.comment = comment
-        elif comment and not record.comment:
-            record.comment = comment
-
-        record.updated_at = self._now()
-        return "updated"
-
-    def update_record_manually(
-        self,
-        record_id: str,
-        abbreviation: Optional[str] = None,
-        long_form: Optional[str] = None,
-        status: Optional[str] = None,
-        comment: Optional[str] = None
-    ) -> bool:
-        for idx, record in enumerate(self.records):
-            if record.record_id != record_id:
-                continue
-
-            if abbreviation is not None and not self._is_empty_like(abbreviation):
-                record.abbreviation = self.normalize_abbreviation(abbreviation)
-
-            if long_form is not None and not self._is_empty_like(long_form):
-                record.long_form = self._safe_text(long_form)
-                record.normalized_long_form = self.normalize_long_form(long_form)
-
-            if status is not None and not self._is_empty_like(status):
-                record.status = self._safe_text(status)
-
-            if comment is not None:
-                record.comment = self._safe_text(comment)
-
-            if not self._is_valid_record(record):
-                return False
-
-            record.updated_at = self._now()
-
-            if record.status == "active":
-                record.status = "edited"
-
-            self.records[idx] = record
-            return True
-
-        return False
-
-    # -----------------------------------------------------------------
-    # Интеграция с результатами этапа 2
-    # -----------------------------------------------------------------
-
-    def import_from_existing_abbreviations_csv(
-        self,
-        csv_path: str | Path,
-        source_document: str = ""
-    ) -> Dict[str, int]:
+    def update_from_existing_abbreviations_csv(self, csv_path: str | Path) -> dict[str, int]:
         csv_path = Path(csv_path)
         if not csv_path.exists():
             raise FileNotFoundError(f"Файл не найден: {csv_path}")
 
-        df = pd.read_csv(csv_path, encoding="utf-8-sig")
+        df = pd.read_csv(csv_path, encoding="utf-8-sig").copy()
 
-        required_columns = {"abbreviation", "long_form", "detection_type"}
+        required_columns = {"abbreviation", "long_form"}
         missing = required_columns - set(df.columns)
         if missing:
             raise ValueError(
@@ -385,183 +185,265 @@ class AbbreviationDatabase:
                 + ", ".join(sorted(missing))
             )
 
+        df["abbreviation"] = df["abbreviation"].fillna("").astype(str).map(self._clean_text)
+        df["long_form"] = df["long_form"].fillna("").astype(str).map(self._clean_text)
+
+        if "detection_type" not in df.columns:
+            df["detection_type"] = ""
+        df["detection_type"] = df["detection_type"].fillna("").astype(str).map(self._clean_text)
+
+        df["normalized_long_form"] = df["long_form"].map(self._normalize_long_form)
+
+        df = df[
+            (df["abbreviation"] != "") &
+            (df["long_form"] != "") &
+            (df["long_form"].str.lower() != "nan") &
+            (df["normalized_long_form"] != "") &
+            (df["normalized_long_form"] != "nan")
+        ].copy()
+
+        records_map = self._records_map()
+        source_document = str(csv_path).replace("/", "\\")
+        now_str = self._now_str()
+
         added = 0
         updated = 0
-        skipped = 0
 
         for _, row in df.iterrows():
-            abbreviation = self._safe_text(row.get("abbreviation", ""))
-            long_form = self._safe_text(row.get("long_form", ""))
-            detection_type = self._safe_text(row.get("detection_type", ""))
+            abbreviation = row["abbreviation"]
+            long_form = row["long_form"]
+            normalized_long_form = row["normalized_long_form"]
+            detection_type = row["detection_type"]
 
-            if detection_type == "standalone" and not long_form:
-                skipped += 1
-                continue
+            record_id = self._make_record_id(abbreviation, normalized_long_form)
 
-            if not abbreviation or not long_form:
-                skipped += 1
-                continue
-
-            normalized_long_form = self.normalize_long_form(long_form)
-            if not normalized_long_form:
-                skipped += 1
-                continue
-
-            result = self.add_or_update_record(
-                abbreviation=abbreviation,
-                long_form=long_form,
-                source_document=source_document,
-                detection_type=detection_type,
-                status="active",
-            )
-
-            if result == "added":
+            if record_id not in records_map:
+                new_record = AbbreviationRecord(
+                    record_id=record_id,
+                    abbreviation=abbreviation,
+                    long_form=long_form,
+                    normalized_long_form=normalized_long_form,
+                    status="active",
+                    source_documents=[source_document],
+                    source_detection_types=[detection_type] if detection_type else [],
+                    comment="",
+                    created_at=now_str,
+                    updated_at=now_str,
+                )
+                records_map[record_id] = asdict(new_record)
                 added += 1
-            elif result == "updated":
-                updated += 1
             else:
-                skipped += 1
+                record = records_map[record_id]
+                record["abbreviation"] = abbreviation
+                record["long_form"] = long_form
+                record["normalized_long_form"] = normalized_long_form
 
-        cleanup_stats = self.clean_invalid_records()
+                if source_document not in record.get("source_documents", []):
+                    record.setdefault("source_documents", []).append(source_document)
+
+                if detection_type and detection_type not in record.get("source_detection_types", []):
+                    record.setdefault("source_detection_types", []).append(detection_type)
+
+                if not record.get("status"):
+                    record["status"] = "active"
+                if "comment" not in record:
+                    record["comment"] = ""
+                if "created_at" not in record or not record["created_at"]:
+                    record["created_at"] = now_str
+
+                record["updated_at"] = now_str
+                updated += 1
+
+        self.records = list(records_map.values())
+        self._sort_records()
 
         return {
             "added": added,
             "updated": updated,
-            "skipped": skipped,
-            "removed_invalid": int(cleanup_stats.get("removed", 0)),
+            "total_records": len(self.records),
         }
 
-    # -----------------------------------------------------------------
-    # Экспорт / импорт для ручной корректировки
-    # -----------------------------------------------------------------
+    update_from_existing_abbreviations = update_from_existing_abbreviations_csv
+    update_from_csv = update_from_existing_abbreviations_csv
+    sync_with_csv = update_from_existing_abbreviations_csv
+    merge_from_csv = update_from_existing_abbreviations_csv
+    add_from_csv = update_from_existing_abbreviations_csv
+    update_database = update_from_existing_abbreviations_csv
+    process_csv = update_from_existing_abbreviations_csv
+    import_from_csv = update_from_existing_abbreviations_csv
 
-    def export_for_manual_edit(self, output_dir: str | Path = "abbreviation_database_export") -> Dict[str, Path]:
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+    def cleanup_invalid_records(self) -> dict[str, int]:
+        before_count = len(self.records)
+        cleaned_records: list[dict[str, Any]] = []
+
+        for record in self.records:
+            abbreviation = self._clean_text(record.get("abbreviation", ""))
+            long_form = self._clean_text(record.get("long_form", ""))
+            normalized_long_form = self._normalize_long_form(
+                record.get("normalized_long_form", "") or long_form
+            )
+
+            if not abbreviation:
+                continue
+            if not long_form:
+                continue
+            if long_form.lower() == "nan":
+                continue
+            if not normalized_long_form:
+                continue
+            if normalized_long_form == "nan":
+                continue
+
+            record["abbreviation"] = abbreviation
+            record["long_form"] = long_form
+            record["normalized_long_form"] = normalized_long_form
+
+            if "status" not in record or not record["status"]:
+                record["status"] = "active"
+            if "comment" not in record or record["comment"] is None:
+                record["comment"] = ""
+
+            if not isinstance(record.get("source_documents", []), list):
+                value = record.get("source_documents", "")
+                record["source_documents"] = [str(value)] if value else []
+
+            if not isinstance(record.get("source_detection_types", []), list):
+                value = record.get("source_detection_types", "")
+                record["source_detection_types"] = [str(value)] if value else []
+
+            cleaned_records.append(record)
+
+        self.records = cleaned_records
+        self._sort_records()
+
+        after_count = len(self.records)
+        removed = before_count - after_count
+
+        return {
+            "before_cleanup": before_count,
+            "after_cleanup": after_count,
+            "removed": removed,
+        }
+
+    cleanup = cleanup_invalid_records
+    clean_invalid_records = cleanup_invalid_records
+    remove_invalid_records = cleanup_invalid_records
+    self_clean = cleanup_invalid_records
+
+    def export_to_csv_and_xlsx(self, export_dir: str | Path) -> dict[str, str]:
+        export_dir = Path(export_dir)
+        export_dir.mkdir(parents=True, exist_ok=True)
 
         df = self.to_dataframe()
 
-        csv_path = output_dir / "abbreviation_database_export.csv"
-        xlsx_path = output_dir / "abbreviation_database_export.xlsx"
+        csv_path = export_dir / "abbreviation_database_export.csv"
+        xlsx_path = export_dir / "abbreviation_database_export.xlsx"
 
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        df.to_excel(xlsx_path, index=False)
 
-        saved_files: Dict[str, Path] = {
-            "csv": csv_path,
+        return {
+            "database_export_csv": str(csv_path),
+            "database_export_xlsx": str(xlsx_path),
         }
 
-        try:
-            df.to_excel(xlsx_path, index=False)
-            saved_files["xlsx"] = xlsx_path
-        except ModuleNotFoundError:
-            pass
+    export_for_manual_editing = export_to_csv_and_xlsx
+    export_manual_edit_files = export_to_csv_and_xlsx
 
-        return saved_files
+    def export_to_csv(self, csv_path: str | Path) -> None:
+        csv_path = Path(csv_path)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        self.to_dataframe().to_csv(csv_path, index=False, encoding="utf-8-sig")
 
-    def import_manual_corrections(self, edited_file_path: str | Path) -> Dict[str, int]:
-        edited_file_path = Path(edited_file_path)
-        if not edited_file_path.exists():
-            raise FileNotFoundError(f"Файл не найден: {edited_file_path}")
+    def export_to_xlsx(self, xlsx_path: str | Path) -> None:
+        xlsx_path = Path(xlsx_path)
+        xlsx_path.parent.mkdir(parents=True, exist_ok=True)
+        self.to_dataframe().to_excel(xlsx_path, index=False)
 
-        suffix = edited_file_path.suffix.lower()
-        if suffix == ".csv":
-            df = pd.read_csv(edited_file_path, encoding="utf-8-sig")
-        elif suffix in {".xlsx", ".xls"}:
-            df = pd.read_excel(edited_file_path)
-        else:
-            raise ValueError("Поддерживаются только CSV/XLSX файлы.")
+    def import_manual_corrections(self, csv_path: str | Path) -> dict[str, int]:
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            raise FileNotFoundError(f"Файл не найден: {csv_path}")
 
-        required_columns = {"record_id", "abbreviation", "long_form", "status", "comment"}
-        missing = required_columns - set(df.columns)
-        if missing:
-            raise ValueError(
-                "В файле ручной корректировки отсутствуют обязательные столбцы: "
-                + ", ".join(sorted(missing))
-            )
+        df = pd.read_csv(csv_path, encoding="utf-8-sig").copy()
 
+        if "record_id" not in df.columns:
+            raise ValueError("Для импорта ручных правок в CSV должен присутствовать столбец record_id.")
+
+        records_map = self._records_map()
         updated = 0
-        not_found = 0
+        skipped = 0
+        now_str = self._now_str()
 
         for _, row in df.iterrows():
-            record_id = self._safe_text(row.get("record_id", ""))
-            abbreviation = row.get("abbreviation", "")
-            long_form = row.get("long_form", "")
-            status = row.get("status", "")
-            comment = row.get("comment", "")
-
-            if not record_id:
-                not_found += 1
+            record_id = self._clean_text(row.get("record_id", ""))
+            if not record_id or record_id not in records_map:
+                skipped += 1
                 continue
 
-            ok = self.update_record_manually(
-                record_id=record_id,
-                abbreviation=abbreviation,
-                long_form=long_form,
-                status=status if not self._is_empty_like(status) else None,
-                comment=comment
-            )
-            if ok:
-                updated += 1
-            else:
-                not_found += 1
+            record = records_map[record_id]
 
-        cleanup_stats = self.clean_invalid_records()
+            abbreviation = self._clean_text(row.get("abbreviation", record.get("abbreviation", "")))
+            long_form = self._clean_text(row.get("long_form", record.get("long_form", "")))
+            status = self._clean_text(row.get("status", record.get("status", "active"))) or "active"
+            comment = str(row.get("comment", record.get("comment", ""))).strip()
+
+            normalized_long_form = self._normalize_long_form(long_form)
+            new_record_id = self._make_record_id(abbreviation, normalized_long_form)
+
+            record["abbreviation"] = abbreviation
+            record["long_form"] = long_form
+            record["normalized_long_form"] = normalized_long_form
+            record["status"] = status
+            record["comment"] = comment
+            record["updated_at"] = now_str
+
+            if new_record_id != record_id:
+                record["record_id"] = new_record_id
+                records_map[new_record_id] = record
+                del records_map[record_id]
+
+            updated += 1
+
+        self.records = list(records_map.values())
+        self.cleanup_invalid_records()
+        self.save()
 
         return {
             "updated": updated,
-            "not_found": not_found,
-            "removed_invalid": int(cleanup_stats.get("removed", 0)),
+            "skipped": skipped,
+            "total_records": len(self.records),
         }
 
-    # -----------------------------------------------------------------
-    # Сводка
-    # -----------------------------------------------------------------
+    def update_from_stage2_and_export(
+        self,
+        existing_abbreviations_csv: str | Path,
+        export_dir: str | Path,
+    ) -> dict[str, Any]:
+        self.load()
+        update_stats = self.update_from_existing_abbreviations_csv(existing_abbreviations_csv)
+        cleanup_stats = self.cleanup_invalid_records()
+        self.save()
+        export_files = self.export_to_csv_and_xlsx(export_dir)
 
-    def build_summary(self) -> pd.DataFrame:
-        df = self.to_dataframe()
-        if df.empty:
-            return pd.DataFrame([{
-                "records_total": 0,
-                "active_records": 0,
-                "edited_records": 0,
-                "deprecated_records": 0,
-                "unique_abbreviations": 0,
-            }])
-
-        summary = {
-            "records_total": len(df),
-            "active_records": int((df["status"] == "active").sum()),
-            "edited_records": int((df["status"] == "edited").sum()),
-            "deprecated_records": int((df["status"] == "deprecated").sum()),
-            "unique_abbreviations": int(df["abbreviation"].nunique()),
+        return {
+            "update_stats": update_stats,
+            "cleanup_stats": cleanup_stats,
+            "database_json": str(self.database_path),
+            **export_files,
         }
-        return pd.DataFrame([summary])
 
 
 if __name__ == "__main__":
-    db = AbbreviationDatabase("abbreviation_database.json")
-    db.load()
+    db = AbbreviationDatabase("abbreviation_database/abbreviation_database.json")
 
-    input_csv = Path("result_stage2/existing_abbreviations.csv")
-    if input_csv.exists():
-        stats = db.import_from_existing_abbreviations_csv(
-            csv_path=input_csv,
-            source_document="result_stage2/existing_abbreviations.csv"
-        )
-        print("Импорт из existing_abbreviations.csv:")
-        print(stats)
+    result = db.update_from_stage2_and_export(
+        existing_abbreviations_csv="result_all/stage2/existing_abbreviations.csv",
+        export_dir="result_all/abbreviation_database_export",
+    )
 
-    cleanup = db.clean_invalid_records()
-    print("Самоочистка базы:")
-    print(cleanup)
-
-    db.save()
-    print(f"JSON-база сохранена: {db.db_path}")
-
-    exported = db.export_for_manual_edit("abbreviation_database_export")
-    print("Файлы для ручной корректировки:")
-    for name, path in exported.items():
-        print(f"{name}: {path}")
-
-    print("\nСводка по базе:")
-    print(db.build_summary().to_string(index=False))
+    print("=" * 72)
+    print("ОБНОВЛЕНИЕ ЕДИНОЙ БАЗЫ АББРЕВИАТУР ЗАВЕРШЕНО")
+    print("=" * 72)
+    for key, value in result.items():
+        print(f"{key}: {value}")

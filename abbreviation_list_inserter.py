@@ -674,8 +674,7 @@ if __name__ == "__main__":
     result = inserter.run(
         input_data_path=input_data_path,
         source_docx_path=source_docx_path,
-        mode="insert_before_marker",
-        marker_text="Общие положения"
+        mode="insert_end",
     )
 
     print("=" * 72)

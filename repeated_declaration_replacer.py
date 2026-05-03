@@ -3,103 +3,384 @@ from __future__ import annotations
 """
 repeated_declaration_replacer.py
 
-Модуль замены повторных объявлений сокращений на сами сокращения.
-
-Что делает модуль:
-1. Загружает existing_abbreviations.csv, сформированный на этапе 2.
-2. Выделяет объявления сокращений:
-   - полная форма (АББР)
-   - полная форма (далее – АББР)
-   - АББР (полная форма)
-3. Сохраняет первое объявление без изменений.
-4. Все последующие повторные объявления того же сокращения
-   заменяет на само сокращение.
-5. Формирует:
-   - новый .docx-файл;
-   - отчёт о произведённых заменах;
-   - таблицу конфликтных сокращений, пропущенных без замены;
-   - краткую сводку.
-
-Важно:
-- модуль заменяет повторные ОБЪЯВЛЕНИЯ сокращений,
-  а не все повторные полные формы термина;
-- обработка выполняется для основного текста документа и таблиц;
-- содержимое сносок текущей версией не изменяется.
+Точечная доработка v3:
+1. Добавлено распознавание строк глоссария:
+   "АББР – полная форма"
+   "полная форма – АББР"
+2. Улучшен подбор длинной части перед "(далее – АББР)":
+   при одинаковом покрытии выбирается наиболее короткий и точный хвост,
+   чтобы не захватывать соседние объявления.
+3. Сохраняется расчёт статистики по повторным употреблениям сокращения
+   после первого объявления.
 """
 
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any
+from collections import defaultdict
+import re
 
 import pandas as pd
-import regex
 from docx import Document
-from docx.document import Document as DocumentObject
-from docx.table import _Cell, Table
-from docx.text.paragraph import Paragraph
-from docx.oxml.text.paragraph import CT_P
-from docx.oxml.table import CT_Tbl
 
 
 @dataclass
-class ReplacementRule:
+class SafeRule:
     abbreviation: str
     long_form: str
     normalized_long_form: str
+    detection_types: list[str]
+    match_count_in_csv: int
 
 
 @dataclass
 class ReplacementEvent:
     abbreviation: str
     long_form: str
+    normalized_long_form: str
     source_type: str
-    source_index: int
-    original_text: str
-    new_text: str
+    source_index: str
+    matched_text: str
+    replacement_text: str
     action: str
+    occurrence_number_global: int
     comment: str
 
 
 class RepeatedDeclarationReplacer:
-    """
-    Заменяет повторные объявления сокращений на сами сокращения.
+    def __init__(self) -> None:
+        pass
 
-    Логика:
-    - первое объявление сокращения сохраняется;
-    - все последующие повторные объявления того же сокращения
-      заменяются на короткую форму;
-    - конфликтные сокращения (одна аббревиатура -> несколько полных форм)
-      автоматически не заменяются.
-    """
+    # ------------------------------------------------------------------
+    # Базовые утилиты
+    # ------------------------------------------------------------------
 
-    def __init__(self, logger=None) -> None:
-        self.logger = logger
-        self.declaration_types = {
-            "declared_long_first",
-            "declared_long_dalee",
-            "declared_abbr_first",
+    @staticmethod
+    def _clean_text(value: Any) -> str:
+        text = str(value).strip()
+        if not text:
+            return ""
+        return " ".join(text.split())
+
+    @classmethod
+    def _normalize_long_form(cls, value: Any) -> str:
+        return cls._clean_text(value).lower()
+
+    @staticmethod
+    def _make_flexible_whitespace_pattern(text: str) -> str:
+        escaped_parts = [re.escape(part) for part in text.split()]
+        return r"\s+".join(escaped_parts)
+
+    @staticmethod
+    def _spans_overlap(span_a: tuple[int, int], span_b: tuple[int, int]) -> bool:
+        return max(span_a[0], span_b[0]) < min(span_a[1], span_b[1])
+
+    @staticmethod
+    def _word_tokens(text: str) -> list[str]:
+        return re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", text.lower())
+
+    @staticmethod
+    def _soft_stem(token: str) -> str:
+        token = token.lower()
+        if len(token) >= 10:
+            return token[:7]
+        if len(token) >= 8:
+            return token[:6]
+        if len(token) >= 6:
+            return token[:5]
+        if len(token) >= 4:
+            return token[:4]
+        return token
+
+    @classmethod
+    def _meaningful_stems(cls, text: str) -> list[str]:
+        stopwords = {
+            "и", "или", "по", "на", "в", "во", "с", "со", "к", "ко", "о", "об",
+            "от", "до", "из", "за", "над", "под", "при", "для", "не", "как",
+            "это", "тот", "та", "те", "данный", "данная", "данное", "данные",
+            "далее", "the", "for", "and", "or", "of", "to", "in", "on"
         }
-        self.section_titles = {
-            "обозначения и сокращения",
-            "перечень обозначений и сокращений",
-        }
+        result: list[str] = []
+        for token in cls._word_tokens(text):
+            if len(token) > 2 and token not in stopwords:
+                result.append(cls._soft_stem(token))
+        return result
 
-    # -----------------------------------------------------------------
-    # Загрузка и подготовка данных
-    # -----------------------------------------------------------------
+    @classmethod
+    def _token_overlap_score(cls, candidate_long_form: str, rule_long_form: str) -> tuple[float, int]:
+        candidate_stems = set(cls._meaningful_stems(candidate_long_form))
+        rule_stems = set(cls._meaningful_stems(rule_long_form))
 
-    def load_existing_abbreviations(self, csv_path: str | Path) -> pd.DataFrame:
-        csv_path = Path(csv_path)
+        if not candidate_stems or not rule_stems:
+            return 0.0, 0
+
+        overlap = candidate_stems & rule_stems
+        overlap_count = len(overlap)
+        coverage = overlap_count / max(len(rule_stems), 1)
+        return coverage, overlap_count
+
+    @classmethod
+    def _looks_like_same_long_form(cls, candidate_long_form: str, rule_long_form: str) -> bool:
+        coverage, overlap_count = cls._token_overlap_score(candidate_long_form, rule_long_form)
+        rule_token_count = len(set(cls._meaningful_stems(rule_long_form)))
+
+        if rule_token_count <= 2:
+            return overlap_count == rule_token_count and overlap_count >= 2
+
+        if rule_token_count == 3:
+            return overlap_count >= 2 and coverage >= 0.66
+
+        return overlap_count >= 2 and coverage >= 0.6
+
+    # ------------------------------------------------------------------
+    # Шаблоны поиска
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _build_strict_declaration_regex(cls, long_form: str, abbreviation: str) -> re.Pattern:
+        long_form_pattern = cls._make_flexible_whitespace_pattern(long_form)
+        abbr_pattern = cls._make_flexible_whitespace_pattern(abbreviation)
+
+        pattern = (
+            rf"(?P<matched>"
+            rf"(?P<long>{long_form_pattern})"
+            rf"\s*"
+            rf"\("
+            rf"\s*"
+            rf"(?:далее\s*[–—-]\s*)?"
+            rf"(?P<abbr>{abbr_pattern})"
+            rf"\s*"
+            rf"\)"
+            rf")"
+        )
+        return re.compile(pattern, flags=re.IGNORECASE)
+
+    @classmethod
+    def _build_parenthetical_abbreviation_regex(cls, abbreviation: str) -> re.Pattern:
+        abbr_pattern = cls._make_flexible_whitespace_pattern(abbreviation)
+        pattern = (
+            rf"\("
+            rf"\s*"
+            rf"(?:далее\s*[–—-]\s*)?"
+            rf"(?P<abbr>{abbr_pattern})"
+            rf"\s*"
+            rf"\)"
+        )
+        return re.compile(pattern, flags=re.IGNORECASE)
+
+    @classmethod
+    def _build_abbreviation_regex(cls, abbreviation: str) -> re.Pattern:
+        abbr_pattern = cls._make_flexible_whitespace_pattern(abbreviation)
+        pattern = rf"(?<!\w){abbr_pattern}(?!\w)"
+        return re.compile(pattern, flags=re.IGNORECASE)
+
+    @classmethod
+    def _build_glossary_line_regex_abbr_first(cls, abbreviation: str) -> re.Pattern:
+        abbr_pattern = cls._make_flexible_whitespace_pattern(abbreviation)
+        pattern = (
+            rf"^\s*"
+            rf"(?P<abbr>{abbr_pattern})"
+            rf"\s*[–—-]\s*"
+            rf"(?P<long>.+?)"
+            rf"\s*$"
+        )
+        return re.compile(pattern, flags=re.IGNORECASE)
+
+    @classmethod
+    def _build_glossary_line_regex_long_first(cls, abbreviation: str) -> re.Pattern:
+        abbr_pattern = cls._make_flexible_whitespace_pattern(abbreviation)
+        pattern = (
+            rf"^\s*"
+            rf"(?P<long>.+?)"
+            rf"\s*[–—-]\s*"
+            rf"(?P<abbr>{abbr_pattern})"
+            rf"\s*$"
+        )
+        return re.compile(pattern, flags=re.IGNORECASE)
+
+    # ------------------------------------------------------------------
+    # Извлечение длинной части перед скобками
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _find_left_boundary(text: str, left_end: int) -> int:
+        search_zone = text[max(0, left_end - 260):left_end]
+        relative_boundary = 0
+        for sep_match in re.finditer(r"[\n\r.;:!?]", search_zone):
+            relative_boundary = sep_match.end()
+        return max(0, left_end - len(search_zone) + relative_boundary)
+
+    @classmethod
+    def _extract_candidate_long_form_before_parentheses(
+        cls,
+        text: str,
+        paren_start: int,
+        rule_long_form: str,
+    ) -> tuple[str, int]:
+        left_boundary = cls._find_left_boundary(text, paren_start)
+        fragment = text[left_boundary:paren_start].strip()
+        fragment = re.sub(r"\s+", " ", fragment)
+
+        if not fragment:
+            return "", paren_start
+
+        token_matches = list(re.finditer(r"[A-Za-zА-Яа-яЁё0-9]+", fragment))
+        if not token_matches:
+            return "", paren_start
+
+        best_candidate = ""
+        best_start_in_fragment = len(fragment)
+        # Чем выше coverage/overlap, тем лучше.
+        # При равенстве берём более короткий кандидат, чтобы не захватывать
+        # лишний контекст и соседние объявления.
+        best_score = (-1.0, -1, 10**9)  # coverage, overlap_count, token_count(min)
+
+        max_tail_tokens = min(len(token_matches), 18)
+
+        for tail_size in range(2, max_tail_tokens + 1):
+            tail_tokens = token_matches[-tail_size:]
+            start_in_fragment = tail_tokens[0].start()
+            candidate = fragment[start_in_fragment:].strip(" ,;:«»\"'„“”’()-")
+            if not candidate:
+                continue
+
+            coverage, overlap_count = cls._token_overlap_score(candidate, rule_long_form)
+            if overlap_count == 0:
+                continue
+
+            token_count = len(cls._word_tokens(candidate))
+            score = (coverage, overlap_count, -token_count)
+
+            if score > best_score and cls._looks_like_same_long_form(candidate, rule_long_form):
+                best_score = score
+                best_candidate = candidate
+                best_start_in_fragment = start_in_fragment
+
+        if not best_candidate:
+            return "", paren_start
+
+        absolute_start = left_boundary + best_start_in_fragment
+        return best_candidate, absolute_start
+
+    # ------------------------------------------------------------------
+    # Гибкий поиск объявлений
+    # ------------------------------------------------------------------
+
+    def _find_declaration_matches(
+        self,
+        text: str,
+        rule: SafeRule,
+    ) -> list[dict[str, Any]]:
+        matches: list[dict[str, Any]] = []
+        used_spans: list[tuple[int, int]] = []
+        clean_text = self._clean_text(text)
+
+        # 1. Строка глоссария: "АББР – полная форма"
+        glossary_abbr_first = self._build_glossary_line_regex_abbr_first(rule.abbreviation)
+        m = glossary_abbr_first.match(clean_text)
+        if m:
+            candidate_long = self._clean_text(m.group("long"))
+            if self._looks_like_same_long_form(candidate_long, rule.long_form):
+                matches.append(
+                    {
+                        "start": 0,
+                        "end": len(text),
+                        "matched_text": clean_text,
+                        "long_text": candidate_long,
+                        "match_type": "glossary_abbr_first",
+                    }
+                )
+                used_spans.append((0, len(text)))
+
+        # 2. Строка глоссария: "полная форма – АББР"
+        glossary_long_first = self._build_glossary_line_regex_long_first(rule.abbreviation)
+        m = glossary_long_first.match(clean_text)
+        if m:
+            candidate_long = self._clean_text(m.group("long"))
+            if self._looks_like_same_long_form(candidate_long, rule.long_form):
+                span = (0, len(text))
+                if not any(self._spans_overlap(span, used_span) for used_span in used_spans):
+                    matches.append(
+                        {
+                            "start": 0,
+                            "end": len(text),
+                            "matched_text": clean_text,
+                            "long_text": candidate_long,
+                            "match_type": "glossary_long_first",
+                        }
+                    )
+                    used_spans.append(span)
+
+        # 3. Строгое объявление "полная форма (далее – АББР)"
+        strict_regex = self._build_strict_declaration_regex(rule.long_form, rule.abbreviation)
+        for match in strict_regex.finditer(text):
+            span = match.span("matched")
+            if any(self._spans_overlap(span, used_span) for used_span in used_spans):
+                continue
+            matches.append(
+                {
+                    "start": span[0],
+                    "end": span[1],
+                    "matched_text": match.group("matched"),
+                    "long_text": self._clean_text(match.group("long")),
+                    "match_type": "strict",
+                }
+            )
+            used_spans.append(span)
+
+        # 4. Гибкое объявление по конструкции "(далее – АББР)"
+        paren_regex = self._build_parenthetical_abbreviation_regex(rule.abbreviation)
+        for paren_match in paren_regex.finditer(text):
+            paren_span = paren_match.span()
+            if any(self._spans_overlap(paren_span, used_span) for used_span in used_spans):
+                continue
+
+            candidate_long, absolute_start = self._extract_candidate_long_form_before_parentheses(
+                text=text,
+                paren_start=paren_span[0],
+                rule_long_form=rule.long_form,
+            )
+            if not candidate_long:
+                continue
+
+            full_start = absolute_start
+            full_end = paren_span[1]
+            full_span = (full_start, full_end)
+
+            if any(self._spans_overlap(full_span, used_span) for used_span in used_spans):
+                continue
+
+            matched_text = self._clean_text(text[full_start:full_end])
+
+            matches.append(
+                {
+                    "start": full_start,
+                    "end": full_end,
+                    "matched_text": matched_text,
+                    "long_text": candidate_long,
+                    "match_type": "generic_token_match",
+                }
+            )
+            used_spans.append(full_span)
+
+        matches.sort(key=lambda item: item["start"])
+        return matches
+
+    # ------------------------------------------------------------------
+    # Загрузка правил из CSV
+    # ------------------------------------------------------------------
+
+    def _load_rules_from_existing_abbreviations(
+        self,
+        existing_abbreviations_csv: str | Path,
+    ) -> tuple[list[SafeRule], int]:
+        csv_path = Path(existing_abbreviations_csv)
         if not csv_path.exists():
             raise FileNotFoundError(f"Файл не найден: {csv_path}")
 
-        df = pd.read_csv(csv_path, encoding="utf-8-sig")
+        df = pd.read_csv(csv_path, encoding="utf-8-sig").copy()
 
-        required_columns = {
-            "abbreviation",
-            "long_form",
-            "detection_type",
-        }
+        required_columns = {"abbreviation", "long_form"}
         missing = required_columns - set(df.columns)
         if missing:
             raise ValueError(
@@ -107,492 +388,482 @@ class RepeatedDeclarationReplacer:
                 + ", ".join(sorted(missing))
             )
 
-        df = df.copy()
-        df["abbreviation"] = df["abbreviation"].fillna("").astype(str).str.strip()
-        df["long_form"] = df["long_form"].fillna("").astype(str).str.strip()
-        df["detection_type"] = df["detection_type"].fillna("").astype(str).str.strip()
+        df["abbreviation"] = df["abbreviation"].fillna("").astype(str).map(self._clean_text)
+        df["long_form"] = df["long_form"].fillna("").astype(str).map(self._clean_text)
+
+        if "detection_type" not in df.columns:
+            df["detection_type"] = ""
+        df["detection_type"] = df["detection_type"].fillna("").astype(str).map(self._clean_text)
+
         df["normalized_long_form"] = df["long_form"].map(self._normalize_long_form)
 
-        return df
-
-    def build_rules(self, df: pd.DataFrame) -> Tuple[List[ReplacementRule], pd.DataFrame]:
-        """
-        Формирует правила замены и таблицу конфликтов.
-
-        Конфликтный случай:
-        одна и та же аббревиатура объявлена с разными полными формами.
-        Для таких сокращений автоматическая замена не выполняется.
-        """
-        declarations_df = df[
-            (df["detection_type"].isin(self.declaration_types)) &
+        df = df[
             (df["abbreviation"] != "") &
-            (df["long_form"] != "")
+            (df["long_form"] != "") &
+            (df["normalized_long_form"] != "")
         ].copy()
 
-        if declarations_df.empty:
-            return [], pd.DataFrame(columns=[
-                "abbreviation",
-                "normalized_long_form",
-                "long_form",
-                "comment",
-            ])
+        safe_rules: list[SafeRule] = []
+        conflict_count = 0
 
-        unique_pairs = declarations_df[
-            ["abbreviation", "long_form", "normalized_long_form"]
-        ].copy()
-        unique_pairs = unique_pairs.sort_values(
-            by=["abbreviation", "normalized_long_form", "long_form"]
-        ).drop_duplicates(
-            subset=["abbreviation", "normalized_long_form"],
-            keep="first"
-        ).reset_index(drop=True)
+        grouped = df.groupby("abbreviation", dropna=False)
+        for abbreviation, group in grouped:
+            unique_forms = sorted(set(group["normalized_long_form"].tolist()))
+            if len(unique_forms) != 1:
+                conflict_count += 1
+                continue
 
-        conflict_rows = []
-        conflict_abbreviations: Set[str] = set()
+            long_form = group["long_form"].iloc[0]
+            normalized_long_form = unique_forms[0]
+            detection_types = sorted(set(x for x in group["detection_type"].tolist() if x))
 
-        for abbreviation, group in unique_pairs.groupby("abbreviation"):
-            unique_forms = group["normalized_long_form"].dropna().unique().tolist()
-            if len(unique_forms) > 1:
-                conflict_abbreviations.add(abbreviation)
-                for _, row in group.iterrows():
-                    conflict_rows.append({
-                        "abbreviation": row["abbreviation"],
-                        "normalized_long_form": row["normalized_long_form"],
-                        "long_form": row["long_form"],
-                        "comment": (
-                            "Для сокращения обнаружено несколько разных полных форм. "
-                            "Автоматическая замена пропущена."
-                        ),
-                    })
-
-        rules: List[ReplacementRule] = []
-        safe_df = unique_pairs[~unique_pairs["abbreviation"].isin(conflict_abbreviations)].copy()
-
-        for _, row in safe_df.iterrows():
-            rules.append(
-                ReplacementRule(
-                    abbreviation=row["abbreviation"],
-                    long_form=row["long_form"],
-                    normalized_long_form=row["normalized_long_form"],
+            safe_rules.append(
+                SafeRule(
+                    abbreviation=abbreviation,
+                    long_form=long_form,
+                    normalized_long_form=normalized_long_form,
+                    detection_types=detection_types,
+                    match_count_in_csv=len(group),
                 )
             )
 
-        # Сначала более длинные полные формы, чтобы избежать частичных перекрытий
-        rules.sort(key=lambda item: len(item.long_form), reverse=True)
+        safe_rules.sort(key=lambda item: len(item.long_form), reverse=True)
+        return safe_rules, conflict_count
 
-        if conflict_rows:
-            conflict_df = pd.DataFrame(conflict_rows)
-        else:
-            conflict_df = pd.DataFrame(columns=[
-                "abbreviation",
-                "normalized_long_form",
-                "long_form",
-                "comment",
-            ])
-        return rules, conflict_df
+    # ------------------------------------------------------------------
+    # Обход документа
+    # ------------------------------------------------------------------
 
-    # -----------------------------------------------------------------
-    # Основная логика замены
-    # -----------------------------------------------------------------
+    def _iter_document_containers(self, doc: Document):
+        for index, paragraph in enumerate(doc.paragraphs):
+            yield {
+                "source_type": "paragraph",
+                "source_index": str(index),
+                "get_text": lambda p=paragraph: p.text,
+                "set_text": lambda new_text, p=paragraph: self._set_paragraph_text(p, new_text),
+            }
 
-    def replace_in_document(
-        self,
-        source_docx_path: str | Path,
-        existing_abbreviations_csv: str | Path,
-        output_path: str | Path,
-    ) -> Dict[str, Path]:
-        source_docx_path = Path(source_docx_path)
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        seen_cells: set[int] = set()
+        for table_index, table in enumerate(doc.tables):
+            for row_index, row in enumerate(table.rows):
+                for cell_index, cell in enumerate(row.cells):
+                    cell_id = id(cell._tc)
+                    if cell_id in seen_cells:
+                        continue
+                    seen_cells.add(cell_id)
 
-        if not source_docx_path.exists():
-            raise FileNotFoundError(f"Файл не найден: {source_docx_path}")
+                    yield {
+                        "source_type": "table_cell",
+                        "source_index": f"table_{table_index}_row_{row_index}_cell_{cell_index}",
+                        "get_text": lambda c=cell: c.text,
+                        "set_text": lambda new_text, c=cell: self._set_cell_text(c, new_text),
+                    }
 
-        df = self.load_existing_abbreviations(existing_abbreviations_csv)
-        rules, conflict_df = self.build_rules(df)
-
-        doc = Document(source_docx_path)
-
-        seen_keys: Set[Tuple[str, str]] = set()
-        events: List[ReplacementEvent] = []
-        total_replacements = 0
-        total_first_kept = 0
-
-        paragraph_counter = 0
-        table_cell_counter = 0
-        in_glossary_section = False
-
-        for block in self._iter_block_items(doc):
-            if isinstance(block, Paragraph):
-                source_type = "paragraph"
-                source_index = paragraph_counter
-                paragraph_counter += 1
-
-                paragraph_text = self._clean_spaces(block.text)
-                if self._is_section_title(paragraph_text):
-                    in_glossary_section = True
-                elif in_glossary_section and self._looks_like_new_section(block, paragraph_text):
-                    in_glossary_section = False
-
-                if in_glossary_section:
-                    continue
-
-                new_text, block_events, kept_count, replaced_count = self._replace_in_text(
-                    text=block.text,
-                    rules=rules,
-                    seen_keys=seen_keys,
-                    source_type=source_type,
-                    source_index=source_index,
-                )
-
-                if new_text != block.text:
-                    block.text = new_text
-
-                events.extend(block_events)
-                total_first_kept += kept_count
-                total_replacements += replaced_count
-
-            elif isinstance(block, Table):
-                for row in block.rows:
-                    for cell in row.cells:
-                        for paragraph in cell.paragraphs:
-                            source_type = "table_cell"
-                            source_index = table_cell_counter
-                            table_cell_counter += 1
-
-                            if in_glossary_section:
-                                continue
-
-                            new_text, block_events, kept_count, replaced_count = self._replace_in_text(
-                                text=paragraph.text,
-                                rules=rules,
-                                seen_keys=seen_keys,
-                                source_type=source_type,
-                                source_index=source_index,
-                            )
-
-                            if new_text != paragraph.text:
-                                paragraph.text = new_text
-
-                            events.extend(block_events)
-                            total_first_kept += kept_count
-                            total_replacements += replaced_count
-
-        doc.save(output_path)
-
-        report_dir = output_path.parent
-        events_df = self.events_to_dataframe(events)
-        summary_df = self.build_summary(
-            rules=rules,
-            events_df=events_df,
-            conflict_df=conflict_df,
-            output_docx=output_path,
-        )
-
-        replacements_csv = report_dir / f"{output_path.stem}_replacement_report.csv"
-        summary_csv = report_dir / f"{output_path.stem}_replacement_summary.csv"
-        conflict_csv = report_dir / f"{output_path.stem}_replacement_conflicts.csv"
-
-        events_df.to_csv(replacements_csv, index=False, encoding="utf-8-sig")
-        summary_df.to_csv(summary_csv, index=False, encoding="utf-8-sig")
-        conflict_df.to_csv(conflict_csv, index=False, encoding="utf-8-sig")
-
-        saved_files: Dict[str, Path] = {
-            "output_docx": output_path,
-            "replacement_report_csv": replacements_csv,
-            "replacement_summary_csv": summary_csv,
-            "replacement_conflicts_csv": conflict_csv,
-        }
-
-        try:
-            replacements_xlsx = report_dir / f"{output_path.stem}_replacement_report.xlsx"
-            summary_xlsx = report_dir / f"{output_path.stem}_replacement_summary.xlsx"
-            conflict_xlsx = report_dir / f"{output_path.stem}_replacement_conflicts.xlsx"
-
-            events_df.to_excel(replacements_xlsx, index=False)
-            summary_df.to_excel(summary_xlsx, index=False)
-            conflict_df.to_excel(conflict_xlsx, index=False)
-
-            saved_files["replacement_report_xlsx"] = replacements_xlsx
-            saved_files["replacement_summary_xlsx"] = summary_xlsx
-            saved_files["replacement_conflicts_xlsx"] = conflict_xlsx
-        except Exception:
-            pass
-
-        if self.logger is not None:
-            for event in events:
-                if event.action == "replaced_with_abbreviation":
-                    try:
-                        self.logger.log_replacement(
-                            old_text=event.original_text,
-                            new_text=event.new_text,
-                        )
-                    except Exception:
-                        pass
-
-            if not conflict_df.empty:
-                try:
-                    self.logger.warning(
-                        "Обнаружены конфликтные сокращения. Они не были заменены автоматически: "
-                        + ", ".join(sorted(conflict_df["abbreviation"].dropna().astype(str).unique().tolist()))
-                    )
-                except Exception:
-                    pass
-
-        return saved_files
-
-    def _replace_in_text(
-        self,
-        text: str,
-        rules: List[ReplacementRule],
-        seen_keys: Set[Tuple[str, str]],
-        source_type: str,
-        source_index: int,
-    ) -> Tuple[str, List[ReplacementEvent], int, int]:
-        if not text or not rules:
-            return text, [], 0, 0
-
-        current_text = text
-        events: List[ReplacementEvent] = []
-        kept_count = 0
-        replaced_count = 0
-
-        for rule in rules:
-            current_text, rule_events, rule_kept, rule_replaced = self._apply_rule(
-                text=current_text,
-                rule=rule,
-                seen_keys=seen_keys,
-                source_type=source_type,
-                source_index=source_index,
+    def _extract_document_texts(self, doc: Document) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        for container in self._iter_document_containers(doc):
+            result.append(
+                {
+                    "source_type": container["source_type"],
+                    "source_index": container["source_index"],
+                    "text": container["get_text"](),
+                }
             )
-            events.extend(rule_events)
-            kept_count += rule_kept
-            replaced_count += rule_replaced
+        return result
 
-        return current_text, events, kept_count, replaced_count
+    @staticmethod
+    def _set_paragraph_text(paragraph, new_text: str) -> None:
+        paragraph.text = new_text
 
-    def _apply_rule(
+    @staticmethod
+    def _set_cell_text(cell, new_text: str) -> None:
+        cell.text = new_text
+
+    # ------------------------------------------------------------------
+    # Замена повторных объявлений
+    # ------------------------------------------------------------------
+
+    def _process_text_container(
         self,
         text: str,
-        rule: ReplacementRule,
-        seen_keys: Set[Tuple[str, str]],
         source_type: str,
-        source_index: int,
-    ) -> Tuple[str, List[ReplacementEvent], int, int]:
-        key = (rule.abbreviation, rule.normalized_long_form)
-        patterns = self._build_rule_patterns(rule)
+        source_index: str,
+        safe_rules: list[SafeRule],
+        occurrence_counters: dict[tuple[str, str], int],
+        events: list[ReplacementEvent],
+    ) -> str:
+        updated_text = text
 
-        current_text = text
-        events: List[ReplacementEvent] = []
-        kept_count = 0
-        replaced_count = 0
+        for rule in safe_rules:
+            key = (rule.abbreviation, rule.normalized_long_form)
+            matches = self._find_declaration_matches(updated_text, rule)
+            if not matches:
+                continue
 
-        for pattern in patterns:
-            def _callback(match) -> str:
-                nonlocal kept_count, replaced_count, events, seen_keys
-                original = match.group(0)
+            pieces: list[str] = []
+            last_pos = 0
 
-                if key not in seen_keys:
-                    seen_keys.add(key)
-                    kept_count += 1
-                    events.append(
-                        ReplacementEvent(
-                            abbreviation=rule.abbreviation,
-                            long_form=rule.long_form,
-                            source_type=source_type,
-                            source_index=source_index,
-                            original_text=original,
-                            new_text=original,
-                            action="kept_first_declaration",
-                            comment="Первое объявление сокращения сохранено без изменений.",
-                        )
-                    )
-                    return original
+            for match_info in matches:
+                start = match_info["start"]
+                end = match_info["end"]
+                matched_text = match_info["matched_text"]
 
-                replaced_count += 1
+                occurrence_counters[key] += 1
+                occurrence_number = occurrence_counters[key]
+
+                if occurrence_number == 1:
+                    replacement_text = matched_text
+                    action = "keep_first_declaration"
+                    comment = "Первое объявление сокращения оставлено без изменений."
+                else:
+                    replacement_text = rule.abbreviation
+                    action = "replace_repeated_declaration"
+                    comment = "Повторное объявление заменено на сокращение."
+
+                pieces.append(updated_text[last_pos:start])
+                pieces.append(replacement_text)
+                last_pos = end
+
                 events.append(
                     ReplacementEvent(
                         abbreviation=rule.abbreviation,
                         long_form=rule.long_form,
+                        normalized_long_form=rule.normalized_long_form,
                         source_type=source_type,
                         source_index=source_index,
-                        original_text=original,
-                        new_text=rule.abbreviation,
-                        action="replaced_with_abbreviation",
-                        comment="Повторное объявление сокращения заменено на краткую форму.",
+                        matched_text=matched_text,
+                        replacement_text=replacement_text,
+                        action=action,
+                        occurrence_number_global=occurrence_number,
+                        comment=comment,
                     )
                 )
-                return rule.abbreviation
 
-            current_text = pattern.sub(_callback, current_text)
+            pieces.append(updated_text[last_pos:])
+            updated_text = "".join(pieces)
 
-        return current_text, events, kept_count, replaced_count
+        return updated_text
 
-    def _build_rule_patterns(self, rule: ReplacementRule) -> List[regex.Pattern]:
-        long_form_pattern = self._build_flexible_phrase_pattern(rule.long_form)
-        abbr_pattern = regex.escape(rule.abbreviation)
+    # ------------------------------------------------------------------
+    # Анализ статистики употреблений
+    # ------------------------------------------------------------------
 
-        return [
-            regex.compile(
-                rf"(?<!\w){long_form_pattern}\s*\(\s*далее\s*[–—-]\s*{abbr_pattern}\s*\)",
-                flags=regex.IGNORECASE,
-            ),
-            regex.compile(
-                rf"(?<!\w){long_form_pattern}\s*\(\s*{abbr_pattern}\s*\)",
-                flags=regex.IGNORECASE,
-            ),
-            regex.compile(
-                rf"(?<!\w){abbr_pattern}\s*\(\s*{long_form_pattern}\s*\)",
-                flags=regex.IGNORECASE,
-            ),
-        ]
-
-    # -----------------------------------------------------------------
-    # Сохранение и отчёты
-    # -----------------------------------------------------------------
-
-    def events_to_dataframe(self, events: List[ReplacementEvent]) -> pd.DataFrame:
-        if not events:
-            return pd.DataFrame(columns=[
-                "abbreviation",
-                "long_form",
-                "source_type",
-                "source_index",
-                "original_text",
-                "new_text",
-                "action",
-                "comment",
-            ])
-        return pd.DataFrame([asdict(item) for item in events])
-
-    def build_summary(
+    def _analyze_usage_statistics(
         self,
-        rules: List[ReplacementRule],
-        events_df: pd.DataFrame,
-        conflict_df: pd.DataFrame,
-        output_docx: Path,
+        safe_rules: list[SafeRule],
+        source_texts: list[dict[str, str]],
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        stats_map: dict[tuple[str, str], dict[str, Any]] = {}
+
+        for rule in safe_rules:
+            key = (rule.abbreviation, rule.normalized_long_form)
+            abbreviation_regex = self._build_abbreviation_regex(rule.abbreviation)
+
+            first_declaration_found = False
+            first_declaration_source_type = ""
+            first_declaration_source_index = ""
+
+            total_declaration_occurrences_found = 0
+            total_abbreviation_mentions_found = 0
+            abbreviation_mentions_inside_declarations = 0
+            plain_abbreviation_mentions_outside_declarations = 0
+            plain_abbreviation_mentions_after_first_declaration = 0
+
+            for container in source_texts:
+                text = container["text"]
+                if not text or not text.strip():
+                    continue
+
+                declaration_matches = self._find_declaration_matches(text, rule)
+                declaration_spans = [(m["start"], m["end"]) for m in declaration_matches]
+
+                total_declaration_occurrences_found += len(declaration_matches)
+
+                if declaration_matches and not first_declaration_found:
+                    first_declaration_found = True
+                    first_declaration_source_type = container["source_type"]
+                    first_declaration_source_index = container["source_index"]
+
+                all_abbr_matches = list(abbreviation_regex.finditer(text))
+                total_abbreviation_mentions_found += len(all_abbr_matches)
+
+                inside_decl_matches = []
+                outside_decl_matches = []
+
+                for abbr_match in all_abbr_matches:
+                    span = abbr_match.span()
+                    if any(self._spans_overlap(span, decl_span) for decl_span in declaration_spans):
+                        inside_decl_matches.append(abbr_match)
+                    else:
+                        outside_decl_matches.append(abbr_match)
+
+                abbreviation_mentions_inside_declarations += len(inside_decl_matches)
+                plain_abbreviation_mentions_outside_declarations += len(outside_decl_matches)
+
+                if first_declaration_found:
+                    if not declaration_matches or container["source_index"] != first_declaration_source_index:
+                        plain_abbreviation_mentions_after_first_declaration += len(outside_decl_matches)
+                    else:
+                        first_decl_end = declaration_matches[0]["end"]
+                        plain_abbreviation_mentions_after_first_declaration += sum(
+                            1 for match in outside_decl_matches if match.start() > first_decl_end
+                        )
+
+            repeated_declarations_expected = max(total_declaration_occurrences_found - 1, 0)
+            total_repeated_usages_after_first_declaration = (
+                repeated_declarations_expected + plain_abbreviation_mentions_after_first_declaration
+            )
+
+            stats_map[key] = {
+                "abbreviation": rule.abbreviation,
+                "long_form": rule.long_form,
+                "normalized_long_form": rule.normalized_long_form,
+                "safe_rule": True,
+                "match_count_in_existing_abbreviations_csv": rule.match_count_in_csv,
+                "first_declaration_found": first_declaration_found,
+                "first_declaration_source_type": first_declaration_source_type,
+                "first_declaration_source_index": first_declaration_source_index,
+                "total_declaration_occurrences_found": total_declaration_occurrences_found,
+                "total_abbreviation_mentions_found": total_abbreviation_mentions_found,
+                "abbreviation_mentions_inside_declarations": abbreviation_mentions_inside_declarations,
+                "plain_abbreviation_mentions_outside_declarations": plain_abbreviation_mentions_outside_declarations,
+                "plain_abbreviation_mentions_after_first_declaration": plain_abbreviation_mentions_after_first_declaration,
+                "repeated_declarations_expected": repeated_declarations_expected,
+                "total_repeated_usages_after_first_declaration": total_repeated_usages_after_first_declaration,
+            }
+
+        return stats_map
+
+    # ------------------------------------------------------------------
+    # Формирование DataFrame
+    # ------------------------------------------------------------------
+
+    def _build_report_dataframe(self, events: list[ReplacementEvent]) -> pd.DataFrame:
+        if not events:
+            return pd.DataFrame(
+                columns=[
+                    "abbreviation",
+                    "long_form",
+                    "normalized_long_form",
+                    "source_type",
+                    "source_index",
+                    "matched_text",
+                    "replacement_text",
+                    "action",
+                    "occurrence_number_global",
+                    "comment",
+                ]
+            )
+        return pd.DataFrame([asdict(event) for event in events])
+
+    def _build_statistics_dataframe(
+        self,
+        safe_rules: list[SafeRule],
+        events: list[ReplacementEvent],
+        usage_stats_map: dict[tuple[str, str], dict[str, Any]],
     ) -> pd.DataFrame:
-        if events_df.empty:
-            kept_first = 0
-            replaced = 0
-        else:
-            kept_first = int((events_df["action"] == "kept_first_declaration").sum())
-            replaced = int((events_df["action"] == "replaced_with_abbreviation").sum())
+        stats_map: dict[tuple[str, str], dict[str, Any]] = {}
 
-        summary = {
-            "output_docx": str(output_docx),
-            "safe_abbreviation_rules": len(rules),
-            "conflict_abbreviations_count": int(
-                conflict_df["abbreviation"].nunique() if not conflict_df.empty else 0
-            ),
-            "first_declarations_kept": kept_first,
-            "repeated_declarations_replaced": replaced,
-            "notes": (
-                "Текущая версия заменяет повторные объявления сокращений "
-                "в основном тексте и таблицах. Сноски не модифицируются."
-            ),
+        for rule in safe_rules:
+            key = (rule.abbreviation, rule.normalized_long_form)
+            base = usage_stats_map.get(key, {}).copy()
+            if not base:
+                base = {
+                    "abbreviation": rule.abbreviation,
+                    "long_form": rule.long_form,
+                    "normalized_long_form": rule.normalized_long_form,
+                    "safe_rule": True,
+                    "match_count_in_existing_abbreviations_csv": rule.match_count_in_csv,
+                    "first_declaration_found": False,
+                    "first_declaration_source_type": "",
+                    "first_declaration_source_index": "",
+                    "total_declaration_occurrences_found": 0,
+                    "total_abbreviation_mentions_found": 0,
+                    "abbreviation_mentions_inside_declarations": 0,
+                    "plain_abbreviation_mentions_outside_declarations": 0,
+                    "plain_abbreviation_mentions_after_first_declaration": 0,
+                    "repeated_declarations_expected": 0,
+                    "total_repeated_usages_after_first_declaration": 0,
+                }
+            base["first_declarations_kept"] = 0
+            base["repeated_declarations_replaced"] = 0
+            base["replacement_rate_percent"] = 0.0
+            stats_map[key] = base
+
+        for event in events:
+            key = (event.abbreviation, event.normalized_long_form)
+            item = stats_map[key]
+            if event.action == "keep_first_declaration":
+                item["first_declarations_kept"] += 1
+            elif event.action == "replace_repeated_declaration":
+                item["repeated_declarations_replaced"] += 1
+
+        rows: list[dict[str, Any]] = []
+        for item in stats_map.values():
+            expected = int(item.get("repeated_declarations_expected", 0))
+            replaced = int(item.get("repeated_declarations_replaced", 0))
+            item["replacement_rate_percent"] = round(replaced / expected * 100, 2) if expected > 0 else 0.0
+            rows.append(item)
+
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.sort_values(by=["abbreviation", "long_form"], ascending=[True, True], kind="stable").reset_index(drop=True)
+        return df
+
+    def _build_summary_dataframe(
+        self,
+        output_docx_path: Path,
+        safe_rules_count: int,
+        conflict_count: int,
+        events: list[ReplacementEvent],
+        statistics_df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        first_kept = sum(1 for event in events if event.action == "keep_first_declaration")
+        repeated_replaced = sum(1 for event in events if event.action == "replace_repeated_declaration")
+        total_occurrences = len(events)
+
+        return pd.DataFrame(
+            [
+                {
+                    "output_docx": str(output_docx_path).replace("/", "\\"),
+                    "safe_abbreviation_rules": safe_rules_count,
+                    "conflict_abbreviations_count": conflict_count,
+                    "total_declaration_occurrences_found": total_occurrences,
+                    "first_declarations_kept": first_kept,
+                    "repeated_declarations_expected": int(statistics_df["repeated_declarations_expected"].sum()) if not statistics_df.empty else 0,
+                    "repeated_declarations_replaced": repeated_replaced,
+                    "plain_abbreviation_mentions_after_first_declaration": int(statistics_df["plain_abbreviation_mentions_after_first_declaration"].sum()) if not statistics_df.empty else 0,
+                    "total_repeated_usages_after_first_declaration": int(statistics_df["total_repeated_usages_after_first_declaration"].sum()) if not statistics_df.empty else 0,
+                    "statistics_by_abbreviation_created": True,
+                    "notes": (
+                        "Добавлено распознавание строк глоссария и улучшен выбор длинной части перед скобками. "
+                        "Это повышает вероятность обнаружения первого объявления сокращения в реальном документе."
+                    ),
+                }
+            ]
+        )
+
+    # ------------------------------------------------------------------
+    # Сохранение результатов
+    # ------------------------------------------------------------------
+
+    def _save_dataframes(
+        self,
+        output_dir: Path,
+        output_docx_path: Path,
+        report_df: pd.DataFrame,
+        summary_df: pd.DataFrame,
+        statistics_df: pd.DataFrame,
+    ) -> dict[str, Path]:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        report_csv = output_dir / f"{output_docx_path.stem}_replacement_report.csv"
+        report_xlsx = output_dir / f"{output_docx_path.stem}_replacement_report.xlsx"
+
+        summary_csv = output_dir / f"{output_docx_path.stem}_replacement_summary.csv"
+        summary_xlsx = output_dir / f"{output_docx_path.stem}_replacement_summary.xlsx"
+
+        stats_csv = output_dir / f"{output_docx_path.stem}_replacement_statistics_by_abbreviation.csv"
+        stats_xlsx = output_dir / f"{output_docx_path.stem}_replacement_statistics_by_abbreviation.xlsx"
+
+        report_df.to_csv(report_csv, index=False, encoding="utf-8-sig")
+        report_df.to_excel(report_xlsx, index=False)
+
+        summary_df.to_csv(summary_csv, index=False, encoding="utf-8-sig")
+        summary_df.to_excel(summary_xlsx, index=False)
+
+        statistics_df.to_csv(stats_csv, index=False, encoding="utf-8-sig")
+        statistics_df.to_excel(stats_xlsx, index=False)
+
+        return {
+            "output_docx": output_docx_path,
+            "replacement_report_csv": report_csv,
+            "replacement_report_xlsx": report_xlsx,
+            "replacement_summary_csv": summary_csv,
+            "replacement_summary_xlsx": summary_xlsx,
+            "replacement_statistics_csv": stats_csv,
+            "replacement_statistics_xlsx": stats_xlsx,
         }
-        return pd.DataFrame([summary])
 
-    # -----------------------------------------------------------------
-    # Вспомогательные методы
-    # -----------------------------------------------------------------
-
-    def _normalize_long_form(self, text: str) -> str:
-        text = self._clean_spaces(text).strip(" ,.;:()[]{}\"'«»")
-        return text.lower()
-
-    def _clean_spaces(self, text: str) -> str:
-        if not text:
-            return ""
-        return regex.sub(r"\s+", " ", str(text)).strip()
-
-    def _build_flexible_phrase_pattern(self, text: str) -> str:
-        parts = [regex.escape(part) for part in self._clean_spaces(text).split()]
-        return r"\s+".join(parts)
-
-    def _is_section_title(self, text: str) -> bool:
-        return self._clean_spaces(text).lower() in self.section_titles
-
-    def _looks_like_new_section(self, paragraph: Paragraph, text: str) -> bool:
-        if not text:
-            return False
-
-        style_name = ""
-        try:
-            if paragraph.style is not None and paragraph.style.name:
-                style_name = str(paragraph.style.name).lower()
-        except Exception:
-            style_name = ""
-
-        if "heading" in style_name or "заголов" in style_name:
-            return True
-
-        if regex.match(r"^\d+(\.\d+)*\s+\S+", text):
-            return True
-
-        return False
-
-    def _iter_block_items(self, parent) -> Iterator[Paragraph | Table]:
-        """
-        Итерирует абзацы и таблицы в реальном порядке следования в документе.
-        """
-        if isinstance(parent, DocumentObject):
-            parent_elm = parent.element.body
-        elif isinstance(parent, _Cell):
-            parent_elm = parent._tc
-        else:
-            raise ValueError("Неподдерживаемый тип контейнера для обхода документа.")
-
-        for child in parent_elm.iterchildren():
-            if isinstance(child, CT_P):
-                yield Paragraph(child, parent)
-            elif isinstance(child, CT_Tbl):
-                yield Table(child, parent)
-
-    # -----------------------------------------------------------------
-    # Полный запуск
-    # -----------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Основной сценарий
+    # ------------------------------------------------------------------
 
     def run(
         self,
         source_docx_path: str | Path,
         existing_abbreviations_csv: str | Path,
         output_dir: str | Path,
-        output_filename: Optional[str] = None,
-    ) -> Dict[str, Path]:
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
+    ) -> dict[str, Path]:
         source_docx_path = Path(source_docx_path)
+        output_dir = Path(output_dir)
 
-        if output_filename is None:
-            output_filename = f"{source_docx_path.stem}_replaced_declarations.docx"
+        if not source_docx_path.exists():
+            raise FileNotFoundError(f"Файл не найден: {source_docx_path}")
 
-        output_path = output_dir / output_filename
+        safe_rules, conflict_count = self._load_rules_from_existing_abbreviations(existing_abbreviations_csv)
 
-        return self.replace_in_document(
-            source_docx_path=source_docx_path,
-            existing_abbreviations_csv=existing_abbreviations_csv,
-            output_path=output_path,
+        source_doc_for_analysis = Document(source_docx_path)
+        source_texts = self._extract_document_texts(source_doc_for_analysis)
+        usage_stats_map = self._analyze_usage_statistics(safe_rules, source_texts)
+
+        doc = Document(source_docx_path)
+        occurrence_counters: dict[tuple[str, str], int] = defaultdict(int)
+        events: list[ReplacementEvent] = []
+
+        for container in self._iter_document_containers(doc):
+            current_text = container["get_text"]()
+            if not current_text or not current_text.strip():
+                continue
+
+            new_text = self._process_text_container(
+                text=current_text,
+                source_type=container["source_type"],
+                source_index=container["source_index"],
+                safe_rules=safe_rules,
+                occurrence_counters=occurrence_counters,
+                events=events,
+            )
+
+            if new_text != current_text:
+                container["set_text"](new_text)
+
+        output_docx_path = output_dir / f"{source_docx_path.stem}_replaced_declarations.docx"
+        output_docx_path.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(output_docx_path)
+
+        report_df = self._build_report_dataframe(events)
+        statistics_df = self._build_statistics_dataframe(
+            safe_rules=safe_rules,
+            events=events,
+            usage_stats_map=usage_stats_map,
+        )
+        summary_df = self._build_summary_dataframe(
+            output_docx_path=output_docx_path,
+            safe_rules_count=len(safe_rules),
+            conflict_count=conflict_count,
+            events=events,
+            statistics_df=statistics_df,
+        )
+
+        return self._save_dataframes(
+            output_dir=output_dir,
+            output_docx_path=output_docx_path,
+            report_df=report_df,
+            summary_df=summary_df,
+            statistics_df=statistics_df,
         )
 
 
 if __name__ == "__main__":
     replacer = RepeatedDeclarationReplacer()
-
-    source_docx = "test_reduction_input.docx"
-    existing_csv = "result_all/stage2/existing_abbreviations.csv"
-    output_dir = "result_all/replacement_stage"
-
-    saved_files = replacer.run(
-        source_docx_path=source_docx,
-        existing_abbreviations_csv=existing_csv,
-        output_dir=output_dir,
+    result = replacer.run(
+        source_docx_path="test_reduction_input.docx",
+        existing_abbreviations_csv="result_all/stage2/existing_abbreviations.csv",
+        output_dir="result_all/replacement_stage",
     )
-
     print("=" * 72)
     print("ЗАМЕНА ПОВТОРНЫХ ОБЪЯВЛЕНИЙ ЗАВЕРШЕНА")
     print("=" * 72)
-    for name, path in saved_files.items():
-        print(f"{name}: {path}")
+    for key, value in result.items():
+        print(f"{key}: {value}")
