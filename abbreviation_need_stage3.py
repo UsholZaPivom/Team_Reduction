@@ -1,71 +1,18 @@
+
 from __future__ import annotations
-
-"""
-abbreviation_need_stage3.py
-
-Этап 3 проекта:
-определение необходимости ввода аббревиатуры.
-
-Назначение модуля:
-1. Использовать результаты второго этапа:
-   - список словоформ, доступных к сокращению,
-   - список уже имеющихся аббревиатур,
-   - сводную таблицу "термин -> аббревиатура найдена / не найдена".
-2. Для каждого термина определить:
-   - нужно ли вводить аббревиатуру;
-   - насколько это целесообразно;
-   - почему принято такое решение.
-3. Сформировать итоговую таблицу рекомендаций.
-
-Что понимается под "необходимостью ввода аббревиатуры":
-- если термин уже имеет объявленную аббревиатуру в документе,
-  то вводить новую не нужно;
-- если аббревиатуры ещё нет, но термин длинный и/или повторяется,
-  то её введение рекомендуется;
-- если термин короткий и встречается редко, аббревиатура обычно не нужна.
-
-Этот модуль НЕ меняет сам документ.
-Он только выносит аналитическое решение для следующего шага.
-"""
-
-# ============================================================
-# 1. Импорт библиотек
-# ============================================================
 
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Any
 
 import pandas as pd
 import regex
 
-# Используем модуль второго этапа.
-# Важно: файл abbreviation_extraction_stage2.py должен лежать рядом.
 from abbreviation_extraction_stage2 import Stage2ReductionAnalyzer
 
 
-# ============================================================
-# 2. Структура итогового решения
-# ============================================================
-
 @dataclass
 class AbbreviationDecision:
-    """
-    Итоговое решение по одному термину.
-
-    Поля:
-    - term: полная форма термина;
-    - suggested_abbreviation: предлагаемая аббревиатура;
-    - abbreviation_found_in_text: уже есть ли эта аббревиатура в документе;
-    - found_abbreviation: какая именно аббревиатура найдена в тексте;
-    - frequency: сколько раз термин был замечен на предыдущих этапах;
-    - word_count: количество слов в термине;
-    - char_length: длина термина в символах;
-    - decision_score: числовая оценка целесообразности ввода аббревиатуры;
-    - need_to_introduce: итоговое решение True/False;
-    - priority: приоритет рекомендации (high/medium/low/none);
-    - reason: текстовое объяснение решения.
-    """
     term: str
     suggested_abbreviation: str
     abbreviation_found_in_text: bool
@@ -79,121 +26,82 @@ class AbbreviationDecision:
     reason: str
 
 
-# ============================================================
-# 3. Основной класс 3-го этапа
-# ============================================================
-
 class AbbreviationNeedAnalyzer:
-    """
-    Класс реализует 3-ю задачу куратора:
-    определить необходимость ввода аббревиатуры.
-
-    Источник данных:
-    - результаты второго этапа (Stage2ReductionAnalyzer).
-
-    Общая логика принятия решения:
-    1. Если аббревиатура уже есть в тексте, новую вводить не нужно.
-    2. Если аббревиатуры нет, рассчитывается score:
-       - чем чаще встречается термин, тем выше score;
-       - чем длиннее термин и чем больше в нём слов, тем выше score;
-       - если предлагаемая аббревиатура выглядит удачной, score растёт.
-    3. По score выносится итог:
-       - high / medium / low priority;
-       - need_to_introduce = True/False.
-    """
-
     def __init__(self) -> None:
-        """
-        Инициализируем модуль второго этапа.
-        """
         self.stage2_analyzer = Stage2ReductionAnalyzer()
-
-    # ========================================================
-    # 4. Публичный метод запуска
-    # ========================================================
+        self.bad_tokens = {
+            "в", "во", "на", "по", "при", "для", "из", "с", "со", "к", "ко",
+            "и", "или", "а", "но", "как", "что", "чтобы", "который", "которые",
+            "которых", "которому", "данный", "данных", "данного", "данной",
+            "этот", "эта", "эти", "того", "таких", "например", "включая",
+            "целью", "рамках", "выбраны", "следующие", "представлен", "представлены",
+            "осуществляется", "используются", "используется", "необходимо",
+            "выполняется", "реализованы", "реализации", "разработке",
+            "адрес", "целью", "внедрения", "состоящий", "состоящими",
+        }
+        self.bad_term_starts = {
+            "в", "во", "на", "по", "при", "для", "из", "с", "со", "к",
+            "данных", "выбраны", "следующие", "целью", "адрес", "включая",
+        }
+        self.bad_term_ends = {
+            "которые", "которых", "используются", "используется", "представлен",
+            "представлены", "реализованы", "реализации", "данных", "включая",
+        }
 
     def run(self, docx_path: str | Path, output_dir: str | Path) -> Dict[str, Path]:
-        """
-        Полный запуск третьего этапа.
-
-        Что делает:
-        1. Запускает второй этап и получает таблицы:
-           - reducible_terms,
-           - existing_abbreviations,
-           - merged_terms_and_abbreviations.
-        2. На основе merged-таблицы определяет необходимость ввода аббревиатуры.
-        3. Сохраняет таблицы с решениями.
-
-        Возвращает словарь с путями к созданным файлам.
-        """
         docx_path = Path(docx_path)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # ----------------------------------------------------
-        # Шаг 1. Запускаем второй этап и получаем его файлы
-        # ----------------------------------------------------
         stage2_output_dir = output_dir / "stage2_intermediate"
         stage2_saved = self.stage2_analyzer.run(docx_path, stage2_output_dir)
 
-        # Читаем сводную таблицу второго этапа.
         merged_csv = stage2_saved["merged_csv"]
-        merged_df = pd.read_csv(merged_csv)
-
-        # Также читаем таблицу уже найденных аббревиатур —
-        # это полезно для расширенного анализа и отладки.
         existing_csv = stage2_saved["existing_abbreviations_csv"]
-        existing_abbreviations_df = pd.read_csv(existing_csv)
 
-        # ----------------------------------------------------
-        # Шаг 2. Формируем решения по каждому термину
-        # ----------------------------------------------------
-        decisions = self._build_decisions(merged_df)
+        merged_df = pd.read_csv(merged_csv, encoding="utf-8-sig")
+        existing_abbreviations_df = pd.read_csv(existing_csv, encoding="utf-8-sig")
+
+        decisions = self._build_decisions(merged_df, existing_abbreviations_df)
         decisions_df = pd.DataFrame([asdict(item) for item in decisions])
-
-        # ----------------------------------------------------
-        # Шаг 3. Дополнительная краткая таблица рекомендаций
-        # ----------------------------------------------------
         recommendations_df = self._build_recommendations_table(decisions_df)
 
-        # ----------------------------------------------------
-        # Шаг 4. Сохраняем результат
-        # ----------------------------------------------------
-        saved_files = self._save_results(
+        return self._save_results(
             merged_df=merged_df,
             existing_abbreviations_df=existing_abbreviations_df,
             decisions_df=decisions_df,
             recommendations_df=recommendations_df,
-            output_dir=output_dir
+            output_dir=output_dir,
         )
 
-        return saved_files
-
-    # ========================================================
-    # 5. Построение решений
-    # ========================================================
-
-    def _build_decisions(self, merged_df: pd.DataFrame) -> List[AbbreviationDecision]:
-        """
-        Преобразует строки merged-таблицы в набор решений.
-
-        Для каждого термина:
-        - считаем score;
-        - определяем, нужно ли вводить аббревиатуру;
-        - формируем объяснение.
-        """
+    def _build_decisions(self, merged_df: pd.DataFrame, existing_abbreviations_df: pd.DataFrame) -> List[AbbreviationDecision]:
         decisions: List[AbbreviationDecision] = []
-
         if merged_df.empty:
             return decisions
 
+        existing_abbrs = {
+            str(value).strip().upper()
+            for value in existing_abbreviations_df.get("abbreviation", pd.Series(dtype=str)).fillna("").tolist()
+            if str(value).strip()
+        }
+
+        long_forms_in_document = set()
+        for column in ["long_form", "matched_term"]:
+            if column in existing_abbreviations_df.columns:
+                for value in existing_abbreviations_df[column].fillna("").tolist():
+                    cleaned = self._clean_text(value).lower()
+                    if cleaned:
+                        long_forms_in_document.add(cleaned)
+
+        temp: List[AbbreviationDecision] = []
+
         for row in merged_df.to_dict("records"):
-            term = str(row.get("term", "")).strip()
-            suggested_abbreviation = str(row.get("suggested_abbreviation", "")).strip().upper()
+            term = self._clean_text(row.get("term", ""))
+            suggested_abbreviation = self._clean_text(row.get("suggested_abbreviation", "")).upper()
             abbreviation_found_in_text = bool(row.get("abbreviation_found_in_text", False))
-            found_abbreviation = str(row.get("found_abbreviation", "")).strip().upper()
-            frequency = int(row.get("frequency", 0))
-            word_count = int(row.get("word_count", 0))
+            found_abbreviation = self._clean_text(row.get("found_abbreviation", "")).upper()
+            frequency = int(self._safe_int(row.get("frequency", 0)))
+            word_count = int(self._safe_int(row.get("word_count", len(self._extract_words(term)))))
             char_length = len(term)
 
             score, reason, priority, need_to_introduce = self._evaluate_term(
@@ -202,10 +110,12 @@ class AbbreviationNeedAnalyzer:
                 abbreviation_found_in_text=abbreviation_found_in_text,
                 frequency=frequency,
                 word_count=word_count,
-                char_length=char_length
+                char_length=char_length,
+                existing_abbrs=existing_abbrs,
+                long_forms_in_document=long_forms_in_document,
             )
 
-            decisions.append(
+            temp.append(
                 AbbreviationDecision(
                     term=term,
                     suggested_abbreviation=suggested_abbreviation,
@@ -217,23 +127,34 @@ class AbbreviationNeedAnalyzer:
                     decision_score=score,
                     need_to_introduce=need_to_introduce,
                     priority=priority,
-                    reason=reason
+                    reason=reason,
                 )
             )
 
-        # Сортируем так, чтобы сначала шли термины,
-        # для которых точно рекомендуется вводить аббревиатуру.
+        best_by_abbr: dict[str, AbbreviationDecision] = {}
+        for item in temp:
+            if not item.suggested_abbreviation:
+                continue
+            prev = best_by_abbr.get(item.suggested_abbreviation)
+            if prev is None or (
+                item.decision_score > prev.decision_score
+                or (item.decision_score == prev.decision_score and item.frequency > prev.frequency)
+                or (item.decision_score == prev.decision_score and item.frequency == prev.frequency and len(item.term) < len(prev.term))
+            ):
+                best_by_abbr[item.suggested_abbreviation] = item
+
+        decisions = list(best_by_abbr.values())
         decisions.sort(
             key=lambda item: (
                 item.need_to_introduce,
                 item.decision_score,
                 item.frequency,
                 item.word_count,
-                item.term
+                -item.char_length,
+                item.term,
             ),
-            reverse=True
+            reverse=True,
         )
-
         return decisions
 
     def _evaluate_term(
@@ -243,224 +164,163 @@ class AbbreviationNeedAnalyzer:
         abbreviation_found_in_text: bool,
         frequency: int,
         word_count: int,
-        char_length: int
+        char_length: int,
+        existing_abbrs: set[str],
+        long_forms_in_document: set[str],
     ) -> tuple[int, str, str, bool]:
-        """
-        Главная эвристика принятия решения.
-
-        Логика:
-        1. Если аббревиатура уже есть в тексте, новую вводить не нужно.
-        2. Иначе считаем decision_score по нескольким критериям:
-           - частота использования термина;
-           - длина термина в словах;
-           - длина термина в символах;
-           - качество предлагаемой аббревиатуры.
-        3. По итоговому score определяем приоритет и итоговое решение.
-        """
-        # ----------------------------------------------------
-        # Случай 1. Аббревиатура уже есть в документе
-        # ----------------------------------------------------
         if abbreviation_found_in_text:
-            return (
-                0,
-                "Аббревиатура уже присутствует в тексте, дополнительный ввод не требуется.",
-                "none",
-                False
-            )
+            return (0, "Аббревиатура уже присутствует в тексте, дополнительный ввод не требуется.", "none",
+                    False)
 
-        # ----------------------------------------------------
-        # Случай 2. Аббревиатуры нет -> оцениваем целесообразность
-        # ----------------------------------------------------
+        if not term or not suggested_abbreviation:
+            return (0, "Недостаточно данных для рекомендации.", "none", False)
+
+
+
+        hard_fail_reason = self._hard_filter_reason(term, suggested_abbreviation, word_count, existing_abbrs, long_forms_in_document)
+        if hard_fail_reason:
+            return (0, " " + hard_fail_reason, "none", False)
+
+        reasons: list[str] = []
         score = 0
-        reasons: List[str] = []
 
-        # --- Критерий 1. Частота ---
-        # Чем чаще встречается термин, тем полезнее его сократить.
-        if frequency >= 4:
-            score += 40
-            reasons.append("термин часто встречается в документе")
-        elif frequency == 3:
+        if frequency >= 5:
             score += 30
-            reasons.append("термин повторяется несколько раз")
-        elif frequency == 2:
+            reasons.append("термин встречается часто")
+        elif frequency >= 3:
             score += 20
+            reasons.append("термин встречается несколько раз")
+        elif frequency >= 2:
+            score += 10
             reasons.append("термин встречается более одного раза")
         else:
-            score += 5
             reasons.append("термин встречается редко")
 
-        # --- Критерий 2. Количество слов ---
-        # Длинные многословные конструкции сильнее выигрывают от сокращения.
-        if word_count >= 5:
-            score += 35
-            reasons.append("термин состоит из 5 и более слов")
-        elif word_count == 4:
-            score += 25
-            reasons.append("термин состоит из 4 слов")
-        elif word_count == 3:
-            score += 15
-            reasons.append("термин состоит из 3 слов")
-        elif word_count == 2:
-            score += 5
-            reasons.append("термин состоит из 2 слов")
-
-        # --- Критерий 3. Длина термина в символах ---
-        # Чем длиннее полная форма, тем заметнее польза аббревиатуры.
-        if char_length >= 40:
+        if 3 <= word_count <= 4:
             score += 20
+            reasons.append(f"термин состоит из {word_count} слов")
+        elif word_count == 2:
+            score += 10
+            reasons.append("термин состоит из 2 слов")
+        elif word_count == 5:
+            score += 8
+            reasons.append("термин довольно длинный по количеству слов")
+        elif word_count >= 6:
+            score -= 20
+            reasons.append("термин слишком длинный для автоматического ввода аббревиатуры")
+
+        if char_length >= 40:
+            score += 12
             reasons.append("полная форма очень длинная")
         elif char_length >= 25:
-            score += 12
+            score += 8
             reasons.append("полная форма достаточно длинная")
         elif char_length >= 18:
-            score += 6
+            score += 4
             reasons.append("полная форма средней длины")
 
-        # --- Критерий 4. Качество предлагаемой аббревиатуры ---
-        # Если аббревиатура получается компактной и читаемой,
-        # её ввод обычно удобнее.
         abbr_quality_score, abbr_reason = self._evaluate_suggested_abbreviation(suggested_abbreviation)
         score += abbr_quality_score
         if abbr_reason:
             reasons.append(abbr_reason)
 
-        # ----------------------------------------------------
-        # Итоговое решение по score
-        # ----------------------------------------------------
-        if score >= 65:
+        soft_penalty, penalty_reasons = self._soft_penalties(term)
+        score += soft_penalty
+        reasons.extend(penalty_reasons)
+
+        if score >= 75:
             priority = "high"
             need_to_introduce = True
             reasons.insert(0, "рекомендуется ввести аббревиатуру")
-        elif score >= 45:
+        elif score >= 60:
             priority = "medium"
             need_to_introduce = True
             reasons.insert(0, "ввод аббревиатуры целесообразен")
-        elif score >= 30:
+        elif score >= 45:
             priority = "low"
             need_to_introduce = False
-            reasons.insert(0, "ввод аббревиатуры возможен, но не обязателен")
+            reasons.insert(0, "кандидат спорный, требуется ручная проверка")
         else:
-            priority = "low"
+            priority = "none"
             need_to_introduce = False
             reasons.insert(0, "ввод аббревиатуры не требуется")
 
-        reason_text = "; ".join(reasons)
+        reason_text = "" + "; ".join(dict.fromkeys(reasons))
         return score, reason_text, priority, need_to_introduce
 
+    def _hard_filter_reason(self, term: str, suggested_abbreviation: str, word_count: int, existing_abbrs: set[str], long_forms_in_document: set[str]) -> str:
+        words = self._extract_words(term)
+        words_lower = [word.lower() for word in words]
+        cleaned_term = self._clean_text(term).lower()
+
+        if word_count < 2:
+            return "Термин слишком короткий для ввода аббревиатуры."
+        if word_count > 5:
+            return "Термин слишком длинный и больше похож на фрагмент предложения, чем на устойчивый термин."
+        if any(ch in term for ch in ";:!?"):
+            return "Термин содержит знаки препинания предложения и не рассматривается как устойчивое словосочетание."
+        if words_lower and words_lower[0] in self.bad_term_starts:
+            return "Термин начинается с контекстного слова и выглядит как фрагмент предложения."
+        if words_lower and words_lower[-1] in self.bad_term_ends:
+            return "Термин заканчивается контекстным словом и выглядит как фрагмент предложения."
+        if sum(1 for token in words_lower if token in self.bad_tokens) >= 2:
+            return "В термине слишком много контекстных слов, поэтому автоматический ввод аббревиатуры запрещён."
+        if suggested_abbreviation in existing_abbrs:
+            return "Такое сокращение уже есть в документе."
+        for existing_abbr in existing_abbrs:
+            if len(existing_abbr) >= 3 and existing_abbr != suggested_abbreviation:
+                if existing_abbr in suggested_abbreviation and len(suggested_abbreviation) > len(existing_abbr):
+                    return "Предлагаемая аббревиатура выглядит как искусственное расширение уже существующего сокращения."
+        if cleaned_term in long_forms_in_document:
+            return "Для этого термина уже есть полная форма в документе, новое сокращение вводить не нужно."
+        if len([w for w in words_lower if w not in self.bad_tokens]) < 2:
+            return "Термин не содержит достаточного числа значимых слов."
+        return ""
+
+    def _soft_penalties(self, term: str) -> tuple[int, list[str]]:
+        penalties = 0
+        reasons: list[str] = []
+        words = [word.lower() for word in self._extract_words(term)]
+        if any(word in {"выбраны", "представлены", "осуществляется", "реализованы"} for word in words):
+            penalties -= 25
+            reasons.append("термин содержит глагольный контекст")
+        if len(words) >= 5 and any(word in self.bad_tokens for word in words[:2]):
+            penalties -= 10
+            reasons.append("начало словосочетания похоже на контекстный хвост")
+        return penalties, reasons
+
     def _evaluate_suggested_abbreviation(self, abbreviation: str) -> tuple[int, str]:
-        """
-        Оценивает качество автоматически предложенной аббревиатуры.
-
-        Идея:
-        - слишком короткая аббревиатура малоинформативна;
-        - слишком длинная аббревиатура неудобна;
-        - оптимальна длина 3..6 символов.
-        """
-        abbreviation = abbreviation.strip().upper()
-
+        abbreviation = self._clean_text(abbreviation).upper()
         if not abbreviation:
-            return 0, "не удалось построить надёжную аббревиатуру"
-
-        # Оставляем только буквы / цифры для оценки длины
-        normalized = regex.sub(r"[^A-ZА-ЯЁ0-9]", "", abbreviation)
-        length = len(normalized)
-
-        if length < 2:
-            return -5, "предлагаемая аббревиатура слишком короткая"
-
-        if 3 <= length <= 6:
-            return 10, "предлагаемая аббревиатура компактная и удобная"
-        elif length in (2, 7):
-            return 5, "предлагаемая аббревиатура допустима по длине"
-        else:
-            return -5, "предлагаемая аббревиатура слишком длинная"
-
-    # ========================================================
-    # 6. Подготовка компактной таблицы рекомендаций
-    # ========================================================
+            return -40, "аббревиатура не сформирована"
+        pure_len = len(abbreviation.replace(" ", ""))
+        if pure_len < 2:
+            return -30, "аббревиатура слишком короткая"
+        if pure_len > 8:
+            return -25, "аббревиатура слишком длинная"
+        if 3 <= pure_len <= 6:
+            return 12, "аббревиатура имеет удобную длину"
+        if pure_len == 2:
+            return 2, "аббревиатура короткая, но допустима"
+        return 6, "аббревиатура допустима по длине"
 
     def _build_recommendations_table(self, decisions_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Формирует компактную таблицу рекомендаций для пользователя / отчёта.
-
-        Оставляем только самые полезные поля:
-        - термин,
-        - предлагаемая аббревиатура,
-        - уже ли есть аббревиатура в тексте,
-        - нужно ли вводить,
-        - приоритет,
-        - краткая причина.
-        """
         if decisions_df.empty:
-            return pd.DataFrame(columns=[
-                "term",
-                "suggested_abbreviation",
-                "abbreviation_found_in_text",
-                "need_to_introduce",
-                "priority",
-                "decision_score",
-                "reason"
-            ])
+            return pd.DataFrame(columns=["term", "suggested_abbreviation", "abbreviation_found_in_text", "need_to_introduce", "priority", "decision_score", "reason"])
+        result = decisions_df[["term", "suggested_abbreviation", "abbreviation_found_in_text", "need_to_introduce", "priority", "decision_score", "reason"]].copy()
+        return result.sort_values(by=["need_to_introduce", "decision_score", "term"], ascending=[False, False, True], kind="stable").reset_index(drop=True)
 
-        columns = [
-            "term",
-            "suggested_abbreviation",
-            "abbreviation_found_in_text",
-            "need_to_introduce",
-            "priority",
-            "decision_score",
-            "reason"
-        ]
-
-        result = decisions_df[columns].copy()
-
-        # Сортируем: сначала те, для кого надо вводить аббревиатуру.
-        priority_order = {"high": 3, "medium": 2, "low": 1, "none": 0}
-        result["_priority_sort"] = result["priority"].map(priority_order).fillna(0)
-
-        result = result.sort_values(
-            by=["need_to_introduce", "_priority_sort", "decision_score", "term"],
-            ascending=[False, False, False, True]
-        ).drop(columns=["_priority_sort"]).reset_index(drop=True)
-
-        return result
-
-    # ========================================================
-    # 7. Сохранение результатов
-    # ========================================================
-
-    def _save_results(
-        self,
-        merged_df: pd.DataFrame,
-        existing_abbreviations_df: pd.DataFrame,
-        decisions_df: pd.DataFrame,
-        recommendations_df: pd.DataFrame,
-        output_dir: Path
-    ) -> Dict[str, Path]:
-        """
-        Сохраняет таблицы в CSV и XLSX.
-
-        Сохраняемые файлы:
-        - merged_terms_and_abbreviations.csv/xlsx
-        - existing_abbreviations.csv/xlsx
-        - abbreviation_decisions.csv/xlsx
-        - abbreviation_recommendations.csv/xlsx
-        """
+    def _save_results(self, merged_df: pd.DataFrame, existing_abbreviations_df: pd.DataFrame, decisions_df: pd.DataFrame, recommendations_df: pd.DataFrame, output_dir: Path) -> Dict[str, Path]:
         saved_files: Dict[str, Path] = {}
-
         merged_csv = output_dir / "merged_terms_and_abbreviations.csv"
         merged_xlsx = output_dir / "merged_terms_and_abbreviations.xlsx"
-
         existing_csv = output_dir / "existing_abbreviations.csv"
         existing_xlsx = output_dir / "existing_abbreviations.xlsx"
-
         decisions_csv = output_dir / "abbreviation_decisions.csv"
         decisions_xlsx = output_dir / "abbreviation_decisions.xlsx"
-
         recommendations_csv = output_dir / "abbreviation_recommendations.csv"
         recommendations_xlsx = output_dir / "abbreviation_recommendations.xlsx"
 
-        # CSV сохраняем всегда
         merged_df.to_csv(merged_csv, index=False, encoding="utf-8-sig")
         existing_abbreviations_df.to_csv(existing_csv, index=False, encoding="utf-8-sig")
         decisions_df.to_csv(decisions_csv, index=False, encoding="utf-8-sig")
@@ -471,18 +331,15 @@ class AbbreviationNeedAnalyzer:
         saved_files["abbreviation_decisions_csv"] = decisions_csv
         saved_files["abbreviation_recommendations_csv"] = recommendations_csv
 
-        # XLSX — если установлен openpyxl
         try:
             merged_df.to_excel(merged_xlsx, index=False)
             existing_abbreviations_df.to_excel(existing_xlsx, index=False)
             decisions_df.to_excel(decisions_xlsx, index=False)
             recommendations_df.to_excel(recommendations_xlsx, index=False)
-
             saved_files["merged_xlsx"] = merged_xlsx
             saved_files["existing_abbreviations_xlsx"] = existing_xlsx
             saved_files["abbreviation_decisions_xlsx"] = decisions_xlsx
             saved_files["abbreviation_recommendations_xlsx"] = recommendations_xlsx
-
         except ModuleNotFoundError as exc:
             print("Внимание: не удалось сохранить XLSX-файлы.")
             print("Причина:", exc)
@@ -490,31 +347,21 @@ class AbbreviationNeedAnalyzer:
 
         return saved_files
 
+    @staticmethod
+    def _extract_words(text: str) -> list[str]:
+        return regex.findall(r"[A-Za-zА-Яа-яЁё0-9-]+", str(text))
 
-# ============================================================
-# 8. Локальный запуск
-# ============================================================
+    @staticmethod
+    def _clean_text(value: Any) -> str:
+        text = str(value).strip()
+        return " ".join(text.split()) if text else ""
 
-if __name__ == "__main__":
-    """
-    Пример запуска.
-
-    Перед запуском:
-    1. Убедитесь, что рядом лежит abbreviation_extraction_stage2.py
-    2. Укажите имя входного документа Word
-    3. Запустите файл
-    """
-
-    input_docx = "test_reduction_input.docx"
-    output_dir = "result_stage3"
-
-    analyzer = AbbreviationNeedAnalyzer()
-    saved_files = analyzer.run(input_docx, output_dir)
-
-    print("=" * 60)
-    print("ЭТАП 3 ЗАВЕРШЁН: определение необходимости ввода аббревиатуры")
-    print("=" * 60)
-    print("Сформированы файлы:")
-
-    for name, path in saved_files.items():
-        print(f"{name}: {path}")
+    @staticmethod
+    def _safe_int(value: Any) -> int:
+        try:
+            return int(value)
+        except Exception:
+            try:
+                return int(float(value))
+            except Exception:
+                return 0

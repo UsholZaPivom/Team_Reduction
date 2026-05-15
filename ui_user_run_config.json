@@ -1,0 +1,513 @@
+{
+  "project_root": "C:/Users/croco/PycharmProjects/Team_Reduction",
+  "source_docx": "C:/Users/croco/PycharmProjects/Team_Reduction/test_reduction_input.docx",
+  "output_dir": "C:/Users/croco/OneDrive/Desktop/ПП/тест",
+  "output_name": "processed_document",
+  "insertion_mode": "append_to_end",
+  "marker_text": "",
+  "existing_section_title": "Перечень обозначений и сокращений",
+  "create_separate_file": true,
+  "run_repeated_replacement": true,
+  "selected_abbreviations": [
+    {
+      "abbreviation": "КИИУК",
+      "long_form": "критической информационной инфраструктуры установлена категория",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ДААСУ",
+      "long_form": "двухуровневой архитектуре автоматизированной системы управления",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ИИУКЗ",
+      "long_form": "информационной инфраструктуры установлена категория значимости",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ИУПУО",
+      "long_form": "исполнительных устройств представлен устройствами обнаружения",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "РПРШС",
+      "long_form": "разработке производству распространению шифровальных средств",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "АСУРТ",
+      "long_form": "автоматизированной системы управления рельсовым транспортом",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается более одного раза; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "85",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "УПУОТ",
+      "long_form": "устройств представлен устройствами обнаружения транспорта",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ОСКЗИ",
+      "long_form": "оборудование средства криптографической защиты информации",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ДИУПУ",
+      "long_form": "данных исполнительных устройств представлен устройствами",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "СОСКЗ",
+      "long_form": "сетевое оборудование средства криптографической защиты",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ЗОКИС",
+      "long_form": "значимого объекта критической информационной структуры",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ФСБРФ",
+      "long_form": "Федеральной службы безопасности Российской Федерации",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ФВСКД",
+      "long_form": "Функционала встроенных средств компонентов действия",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "УОУИС",
+      "long_form": "уровень операторского управления инженерная станция",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "СПС",
+      "long_form": "соответствующими программно-техническими средствами",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 3 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "50",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ПОСОХ",
+      "long_form": "программного обеспечения средств обрабокти хранения",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ЛУФСБ",
+      "long_form": "лицензия Управления Федеральной службы безопасности",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ИВМЗК",
+      "long_form": "информации встроенных механизмов защиты компонентов",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ЦРМРК",
+      "long_form": "целью реализации механизмов резервного копирования",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "УСАА",
+      "long_form": "установки стандартного Агента администрирования",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "60",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "СЗИВМ",
+      "long_form": "средств защиты информации встроенных механизмов",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ВСККУ",
+      "long_form": "выбраны следующие компоненты Контроль устройств",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ЗИВМЗ",
+      "long_form": "защиты информации встроенных механизмов защиты",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "УВДИУ",
+      "long_form": "уровень ввода данных исполнительных устройств",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "РШСО",
+      "long_form": "реализованных штатными средствами обеспечения",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "60",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ПСРК",
+      "long_form": "проектируемое средство резервного копирования",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "60",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ИБЗО",
+      "long_form": "информационной безопасности значимого объекта",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "60",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "БПЛК",
+      "long_form": "базе программируемого логического контроллера",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "60",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ККУИ",
+      "long_form": "компоненты Контроль устройств Использование",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "60",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "КДСО",
+      "long_form": "качестве дополнительных средств обеспечения",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "60",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ТПЗФЗ",
+      "long_form": "требованию Постоянная защита файлов Защита",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин встречается редко; термин состоит из 5 и более слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "70",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "СУАУ",
+      "long_form": "Средний уровень автоматического управления",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "60",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "АИБ",
+      "long_form": "админитратором информационной безопасности",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 3 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "50",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "СУСП",
+      "long_form": "сетевых угроз Счетчики производительности",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "60",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ВУОУ",
+      "long_form": "верхний уровень операторского управления",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма очень длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "60",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ЦПДС",
+      "long_form": "Целью применения дополнительных средств",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ООРЭ",
+      "long_form": "отдельных объектов размещения элементов",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "АСОС",
+      "long_form": "активное сетевое оборудование средства",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "НСЗИ",
+      "long_form": "наложенных средства защиты информации",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "КБРИ",
+      "long_form": "Кибер Бэкап реализована идентификация",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "КМЗИ",
+      "long_form": "компенсирующих мер защиты информации",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ВСЗИ",
+      "long_form": "встроенных средств защиты информации",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ПОКБ",
+      "long_form": "программном обеспечении Кибер Бэкап",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "РККБ",
+      "long_form": "резервного копирования Кибер Бэкап",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "УСЭЗ",
+      "long_form": "Управление сетевым экраном Защита",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "РМЗИ",
+      "long_form": "разработке мер защиты информации",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "ОБПУ",
+      "long_form": "окне Быстрая проверка устройства",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "СХРК",
+      "long_form": "Срок хранения резервных копий",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "СОХ",
+      "long_form": "средства обработки хранения",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: high рекомендуется ввести аббревиатуру; термин повторяется несколько раз; термин состоит из 3 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "67",
+      "already_exists_in_document": false
+    },
+    {
+      "abbreviation": "НУВД",
+      "long_form": "Нижний уровень ввода данных",
+      "recommended": true,
+      "selected": true,
+      "source_file": "abbreviation_decisions.xlsx",
+      "note": "Приоритет: medium ввод аббревиатуры целесообразен; термин встречается редко; термин состоит из 4 слов; полная форма достаточно длинная; предлагаемая аббревиатура компактная и удобная",
+      "score": "52",
+      "already_exists_in_document": false
+    }
+  ]
+}
