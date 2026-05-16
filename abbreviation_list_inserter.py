@@ -36,6 +36,28 @@ from docx.shared import Pt
 from docx.table import Table
 
 
+def safe_set_table_style(table) -> None:
+    """
+    Безопасно назначает таблице стиль Word.
+    Если нужного стиля нет в конкретном документе, пробует альтернативы.
+    Если ни один стиль недоступен, таблица остаётся со стилем по умолчанию.
+    """
+    candidate_styles = [
+        "Table Grid",
+        "Normal Table",
+        "Сетка таблицы",
+        "Обычная таблица",
+        "Table Normal",
+    ]
+
+    for style_name in candidate_styles:
+        try:
+            table.style = style_name
+            return
+        except Exception:
+            continue
+
+
 @dataclass
 class AbbreviationEntry:
     abbreviation: str
@@ -153,7 +175,7 @@ class AbbreviationListInserter:
 
     def _add_entries_table(self, document: Document, entries: List[AbbreviationEntry]):
         table = document.add_table(rows=1, cols=2)
-        table.style = "Table Grid"
+        safe_set_table_style(table)
 
         hdr = table.rows[0].cells
         hdr[0].text = "Сокращение"
@@ -559,7 +581,7 @@ class AbbreviationListInserter:
 
         spacer = target.insert_paragraph_before("")
         table = document.add_table(rows=1, cols=2)
-        table.style = "Table Grid"
+        safe_set_table_style(table)
 
         hdr = table.rows[0].cells
         hdr[0].text = "Сокращение"
@@ -593,7 +615,7 @@ class AbbreviationListInserter:
 
         spacer = self._insert_paragraph_after(existing_heading, "")
         table = document.add_table(rows=1, cols=2)
-        table.style = "Table Grid"
+        safe_set_table_style(table)
 
         hdr = table.rows[0].cells
         hdr[0].text = "Сокращение"
@@ -616,27 +638,36 @@ class AbbreviationListInserter:
         source_docx_path: str | Path,
         mode: str = "separate_file",
         output_path: Optional[str | Path] = None,
-        marker_text: Optional[str] = None
+        marker_text: Optional[str] = None,
+        section_title: str = "Перечень обозначений и сокращений",
     ) -> Dict[str, Path]:
         entries = self.load_entries_from_file(input_data_path)
         source_docx_path = Path(source_docx_path)
 
         if mode == "separate_file":
             if output_path is None:
-                created = self.create_separate_document_next_to_source(source_docx_path, entries)
-            else:
-                created = self.create_separate_document(entries, output_path)
+                output_path = source_docx_path.with_name(
+                    f"{source_docx_path.stem}_abbreviation_list.docx"
+                )
+            created = self.create_separate_document(
+                entries=entries,
+                output_path=output_path,
+                title=section_title
+            )
             return {"output_docx": created}
 
         if output_path is None:
-            output_path = source_docx_path.with_name(f"{source_docx_path.stem}_with_abbreviation_list.docx")
+            output_path = source_docx_path.with_name(
+                f"{source_docx_path.stem}_with_abbreviation_list.docx"
+            )
 
         if mode == "insert_end":
             created = self.insert_into_existing_document(
                 source_docx_path=source_docx_path,
                 entries=entries,
                 output_path=output_path,
-                mode="end"
+                mode="end",
+                section_title=section_title,
             )
             return {"output_docx": created}
 
@@ -646,7 +677,8 @@ class AbbreviationListInserter:
                 entries=entries,
                 output_path=output_path,
                 mode="before_marker",
-                marker_text=marker_text
+                marker_text=marker_text,
+                section_title=section_title,
             )
             return {"output_docx": created}
 
@@ -655,7 +687,8 @@ class AbbreviationListInserter:
                 source_docx_path=source_docx_path,
                 entries=entries,
                 output_path=output_path,
-                mode="append_existing_list"
+                mode="append_existing_list",
+                section_title=section_title,
             )
             return {"output_docx": created}
 
