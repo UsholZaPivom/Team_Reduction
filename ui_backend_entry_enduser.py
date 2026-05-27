@@ -5,6 +5,7 @@ import os
 import shutil
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -19,7 +20,7 @@ from repeated_declaration_replacer import RepeatedDeclarationReplacer
 
 
 # ==========================================================
-# Утилиты путей / метаданных
+# Утилиты путей / метаданных / логирования
 # ==========================================================
 
 
@@ -38,6 +39,10 @@ CONFIG_PATH = APP_ROOT / "ui_user_run_config.json"
 RUNS_ROOT = APP_ROOT / "runs"
 RUNS_ROOT.mkdir(parents=True, exist_ok=True)
 
+LOGS_ROOT = APP_ROOT / "logs"
+LOGS_ROOT.mkdir(parents=True, exist_ok=True)
+APP_LOG_PATH = LOGS_ROOT / "reduction_app.log"
+
 
 @dataclass
 class RecommendationRow:
@@ -55,9 +60,8 @@ class EndUserBackend:
     """
     Backend пользовательского приложения.
 
-    Основная доработка: результаты анализа stage 3 жёстко привязаны
-    к конкретному входному документу. Старые рекомендации не подмешиваются
-    к новому документу.
+    Результаты анализа stage 3 жёстко привязаны к конкретному входному
+    документу. Старые рекомендации не подмешиваются к новому документу.
     """
 
     def __init__(self, logger: Optional[Callable[[str], None]] = None) -> None:
@@ -161,6 +165,12 @@ class EndUserBackend:
             self.log(f"Выбран новый исходный файл: {path}")
         else:
             self.log(f"Исходный файл подтверждён: {path}")
+
+        if self.current_run_dir:
+            run_log = self.current_run_dir / "logs" / "run_log.txt"
+            self.log(f"Лог текущего запуска сохраняется в файл: {run_log}")
+            self.log(f"Общий лог приложения сохраняется в файл: {APP_LOG_PATH}")
+
         return changed
 
     def reset_analysis_state(self) -> None:
@@ -203,6 +213,13 @@ class EndUserBackend:
 
         rec_path = self.stage3_saved_files.get("abbreviation_recommendations_csv")
         self.log(f"Найден файл кандидатов: {rec_path}")
+
+        perf_log = stage3_dir / "analysis_performance_log.txt"
+        if perf_log.exists():
+            self.log(f"Файл диагностики времени анализа: {perf_log}")
+        else:
+            self.log("Файл analysis_performance_log.txt не найден; ход анализа записан в основной лог запуска.")
+
         rows = self._load_recommendations_from_current_stage3()
         self.log(f"Загружено вариантов: {len(rows)}")
         return rows
@@ -756,13 +773,60 @@ class EndUserApp(tk.Tk):
     # Вспомогательные методы UI
     # ---------------------------
 
+    def _timestamp(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _current_run_log_path(self) -> Optional[Path]:
+        backend = getattr(self, "backend", None)
+        run_dir = getattr(backend, "current_run_dir", None)
+        if not run_dir:
+            return None
+        return Path(run_dir) / "logs" / "run_log.txt"
+
+    def _write_log_files(self, message: str) -> None:
+        line = f"[{self._timestamp()}] {message}\n"
+
+        APP_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with APP_LOG_PATH.open("a", encoding="utf-8") as file:
+            file.write(line)
+
+        run_log = self._current_run_log_path()
+        if run_log:
+            run_log.parent.mkdir(parents=True, exist_ok=True)
+            with run_log.open("a", encoding="utf-8") as file:
+                file.write(line)
+
     def _append_log(self, message: str) -> None:
         if threading.current_thread() is not threading.main_thread():
             self.after(0, lambda: self._append_log(message))
             return
+
+        try:
+            self._write_log_files(message)
+        except Exception:
+            pass
+
         self.log_text.insert("end", f"{message}\n")
         self.log_text.see("end")
         self.update_idletasks()
+
+    def _copy_run_log_next_to_output(self, result: Dict[str, Path]) -> Optional[Path]:
+        run_log = self._current_run_log_path()
+        if not run_log or not run_log.exists():
+            return None
+
+        output_docx = result.get("output_docx")
+        if not output_docx:
+            docx_candidates = [Path(value) for value in result.values() if str(value).lower().endswith(".docx")]
+            output_docx = docx_candidates[0] if docx_candidates else None
+
+        if not output_docx:
+            return None
+
+        output_docx = Path(output_docx)
+        target_log = output_docx.with_name(f"{output_docx.stem}_run_log.txt")
+        shutil.copy2(run_log, target_log)
+        return target_log
 
     def _set_busy(self, is_busy: bool, status: str) -> None:
         self.status_var.set(status)
@@ -1000,6 +1064,17 @@ class EndUserApp(tk.Tk):
 
     def _finish_processing_success(self, result: Dict[str, Path]) -> None:
         self._set_busy(False, "Финальная обработка завершена.")
+
+        copied_log = None
+        try:
+            copied_log = self._copy_run_log_next_to_output(result)
+        except Exception as exc:
+            self._append_log(f"Не удалось скопировать лог рядом с итоговым файлом: {exc}")
+
+        if copied_log:
+            result["run_log_txt"] = copied_log
+            self._append_log(f"Копия лога сохранена рядом с итоговым файлом: {copied_log}")
+
         result_lines = [f"{key}: {value}" for key, value in result.items()]
         messagebox.showinfo("Успешно", "Финальная обработка завершена.\n\n" + "\n".join(result_lines))
 
