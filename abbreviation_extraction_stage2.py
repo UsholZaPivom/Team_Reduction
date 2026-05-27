@@ -16,6 +16,7 @@ abbreviation_extraction_stage2.py
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Set
+import time
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -130,6 +131,7 @@ class ExistingAbbreviationExtractor:
     def __init__(self) -> None:
         self.segmenter = Segmenter()
         self.morph = MorphAnalyzer()
+        self._parse_cache = {}
 
         self.classic_abbr_pattern = r"[A-ZА-ЯЁ][A-ZА-ЯЁ0-9-]{1,15}"
         self.word_pattern = regex.compile(r"[A-Za-zА-Яа-яЁё-]+")
@@ -210,7 +212,13 @@ class ExistingAbbreviationExtractor:
         return self.word_pattern.findall(text)
 
     def _parse_word(self, word: str):
-        return self.morph.parse(word)[0]
+        key = str(word).lower()
+        cached = self._parse_cache.get(key)
+        if cached is not None:
+            return cached
+        parsed = self.morph.parse(word)[0]
+        self._parse_cache[key] = parsed
+        return parsed
 
     def _get_pos(self, word: str) -> str:
         pos = self._parse_word(word).tag.POS
@@ -367,30 +375,79 @@ class ExistingAbbreviationExtractor:
 
         return text
 
+    def _looks_like_code_or_config(self, text: str) -> bool:
+        """
+        Отсекает строки кода, конфигураций и технических параметров.
+        Такие фрагменты часто содержат много служебных символов и
+        порождают ложные сокращения.
+        """
+        text = self._clean_long_form(text)
+        if not text:
+            return False
+
+        lowered = text.lower()
+        code_markers = [
+            "=", ";", "{", "}", "<", ">", "\\", "/", "_", "==", "!=", "->", "::",
+            "http://", "https://", "select ", "insert ", "update ", "delete ",
+            "create table", "alter table", "class ", "def ", "function ", "var ",
+            "let ", "const ", "policy key", "textblock", "conflict", "return ",
+            "if ", "else ", "for ", "while ", "public ", "private ",
+        ]
+        marker_count = sum(1 for marker in code_markers if marker in lowered)
+
+        letters = sum(ch.isalpha() for ch in text)
+        technical = sum(1 for ch in text if ch in "=;{}<>\\/_|[]")
+        digits = sum(ch.isdigit() for ch in text)
+
+        if marker_count >= 2:
+            return True
+        if technical >= 3 and technical >= max(2, letters // 3):
+            return True
+        if digits >= 4 and technical >= 2:
+            return True
+        if regex.search(r"\b(?:var|let|const|function|class|policy|key|textblock|conflict)\b", lowered):
+            return True
+        if regex.search(r"[a-z]+[A-Z][A-Za-z]*", text):
+            return True
+
+        return False
+
+    def _split_by_strong_punctuation(self, text: str) -> List[str]:
+        """
+        Разбивает текст по сильным разделителям, чтобы не объединять
+        независимые элементы через запятую, точку с запятой или двоеточие.
+        """
+        parts = regex.split(r"[,;:]+", text)
+        return [self._clean_long_form(part) for part in parts if self._clean_long_form(part)]
+
     def extract_from_fragments(self, fragments: List[TextFragment]) -> List[FoundAbbreviation]:
         found: List[FoundAbbreviation] = []
 
         for fragment in fragments:
-            for sentence in self.split_into_sentences(fragment.text):
-                declared_items = self._extract_declared_abbreviations(
-                    sentence=sentence,
-                    source_type=fragment.source_type,
-                    source_index=fragment.source_index
-                )
-                found.extend(declared_items)
+            if self._looks_like_code_or_config(fragment.text):
+                continue
 
-                declared_abbreviations_in_sentence = {
-                    self._normalize_abbreviation(item.abbreviation)
-                    for item in declared_items
-                }
-                found.extend(
-                    self._extract_standalone_abbreviations(
-                        sentence=sentence,
+            for sentence in self.split_into_sentences(fragment.text):
+                for sentence_part in self._split_by_strong_punctuation(sentence):
+                    declared_items = self._extract_declared_abbreviations(
+                        sentence=sentence_part,
                         source_type=fragment.source_type,
-                        source_index=fragment.source_index,
-                        declared_in_same_sentence=declared_abbreviations_in_sentence
+                        source_index=fragment.source_index
                     )
-                )
+                    found.extend(declared_items)
+
+                    declared_abbreviations_in_sentence = {
+                        self._normalize_abbreviation(item.abbreviation)
+                        for item in declared_items
+                    }
+                    found.extend(
+                        self._extract_standalone_abbreviations(
+                            sentence=sentence_part,
+                            source_type=fragment.source_type,
+                            source_index=fragment.source_index,
+                            declared_in_same_sentence=declared_abbreviations_in_sentence
+                        )
+                    )
 
         return self._deduplicate(found)
 
@@ -404,6 +461,8 @@ class ExistingAbbreviationExtractor:
                 continue
 
             long_form = self._shrink_long_form(raw_long_form, direction="right")
+            if self._looks_like_code_or_config(long_form):
+                continue
             if len(self._extract_words(long_form)) < 2:
                 continue
 
@@ -430,6 +489,8 @@ class ExistingAbbreviationExtractor:
                 continue
 
             long_form = self._shrink_long_form(raw_long_form, direction="right")
+            if self._looks_like_code_or_config(long_form):
+                continue
             if len(self._extract_words(long_form)) < 2:
                 continue
 
@@ -457,6 +518,8 @@ class ExistingAbbreviationExtractor:
                 continue
 
             long_form = self._shrink_long_form(raw_long_form, direction="left")
+            if self._looks_like_code_or_config(long_form):
+                continue
             if len(self._extract_words(long_form)) < 2:
                 continue
 
@@ -560,6 +623,10 @@ class Stage2ReductionAnalyzer:
 
                 if not self.abbreviation_extractor._is_valid_abbreviation(abbreviation):
                     continue
+                if self.abbreviation_extractor._looks_like_code_or_config(line) or self.abbreviation_extractor._looks_like_code_or_config(long_form):
+                    continue
+                if regex.search(r"\b(?:var|let|const|function|class|policy|key|textblock|conflict)\b", long_form.lower()):
+                    continue
 
                 # Резервное правило: короткие строки с тире тоже считаем словарными,
                 # даже если heading не распознался как heading-style.
@@ -610,6 +677,123 @@ class Stage2ReductionAnalyzer:
         inter = len(set_a & set_b)
         denom = max(len(set_a), len(set_b))
         return inter / denom if denom else 0.0
+
+    def _is_better_abbreviation_row(self, candidate: dict, current: dict) -> bool:
+        """
+        Выбирает одну лучшую полную форму для одной аббревиатуры.
+        Приоритет: явное объявление/глоссарий, наличие в тексте, частота,
+        меньше лишнего контекста, короче формулировка.
+        """
+        candidate_source = self._source_priority(str(candidate.get("detection_type", "")))
+        current_source = self._source_priority(str(current.get("detection_type", "")))
+        if candidate_source != current_source:
+            return candidate_source > current_source
+
+        candidate_found = bool(candidate.get("abbreviation_found_in_text", False))
+        current_found = bool(current.get("abbreviation_found_in_text", False))
+        if candidate_found != current_found:
+            return candidate_found
+
+        candidate_score = float(candidate.get("match_score", 0) or 0)
+        current_score = float(current.get("match_score", 0) or 0)
+        if candidate_score != current_score:
+            return candidate_score > current_score
+
+        candidate_freq = int(candidate.get("frequency", 0) or 0)
+        current_freq = int(current.get("frequency", 0) or 0)
+        if candidate_freq != current_freq:
+            return candidate_freq > current_freq
+
+        candidate_term = str(candidate.get("term", "")).strip()
+        current_term = str(current.get("term", "")).strip()
+        return len(candidate_term) < len(current_term)
+
+    def _deduplicate_merged_by_abbreviation(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty or "suggested_abbreviation" not in df.columns:
+            return df
+
+        best: dict[str, dict] = {}
+        for row in df.to_dict("records"):
+            abbr = str(row.get("suggested_abbreviation", "")).strip().upper()
+            term = str(row.get("term", "")).strip()
+            if not abbr or not term:
+                continue
+
+            if abbr not in best or self._is_better_abbreviation_row(row, best[abbr]):
+                best[abbr] = row
+
+        result = pd.DataFrame(best.values())
+        if result.empty:
+            return result
+
+        return result.sort_values(
+            by=["abbreviation_found_in_text", "frequency", "word_count", "term"],
+            ascending=[False, False, False, True],
+            kind="stable",
+        ).reset_index(drop=True)
+
+    def _deduplicate_existing_by_abbreviation(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty or "abbreviation" not in df.columns:
+            return df
+
+        best: dict[str, dict] = {}
+        for row in df.to_dict("records"):
+            abbr = str(row.get("abbreviation", "")).strip().upper()
+            if not abbr:
+                continue
+            term = str(row.get("matched_term") or row.get("long_form") or "").strip()
+            row_for_compare = {
+                **row,
+                "suggested_abbreviation": abbr,
+                "term": term,
+                "abbreviation_found_in_text": True,
+            }
+            if abbr not in best:
+                best[abbr] = row
+            else:
+                current_term = str(best[abbr].get("matched_term") or best[abbr].get("long_form") or "").strip()
+                current_for_compare = {
+                    **best[abbr],
+                    "suggested_abbreviation": abbr,
+                    "term": current_term,
+                    "abbreviation_found_in_text": True,
+                }
+                if self._is_better_abbreviation_row(row_for_compare, current_for_compare):
+                    best[abbr] = row
+
+        result = pd.DataFrame(best.values())
+        if result.empty:
+            return result
+        return result.sort_values(by=["abbreviation"], ascending=[True], kind="stable").reset_index(drop=True)
+
+    def _ensure_suggested_abbreviation_existing_flag(self, merged_df: pd.DataFrame, existing_abbreviations_df: pd.DataFrame) -> pd.DataFrame:
+        if merged_df.empty:
+            return merged_df
+
+        existing_abbrs = {
+            str(value).strip().upper()
+            for value in existing_abbreviations_df.get("abbreviation", pd.Series(dtype=str)).fillna("").tolist()
+            if str(value).strip()
+        }
+
+        if not existing_abbrs:
+            return merged_df
+
+        result = merged_df.copy()
+        result["suggested_abbreviation_upper"] = result["suggested_abbreviation"].astype(str).str.strip().str.upper()
+
+        result.loc[
+            result["suggested_abbreviation_upper"].isin(existing_abbrs),
+            "abbreviation_found_in_text",
+        ] = True
+
+        result.loc[
+            result["suggested_abbreviation_upper"].isin(existing_abbrs) & (result["found_abbreviation"].astype(str).str.strip() == ""),
+            "found_abbreviation",
+        ] = result["suggested_abbreviation"]
+
+        result = result.drop(columns=["suggested_abbreviation_upper"])
+        return result
 
     def _ensure_glossary_terms_present(
         self,
@@ -732,10 +916,22 @@ class Stage2ReductionAnalyzer:
         reducible_terms_df = self._ensure_glossary_terms_present(reducible_terms_df, found_abbreviations)
         reducible_terms_df = self._canonicalize_terms_by_glossary(reducible_terms_df, found_abbreviations)
 
+        # Ограничиваем число терминов перед сопоставлением, чтобы большие документы
+        # не приводили к чрезмерно долгому квадратичному анализу.
+        if not reducible_terms_df.empty and len(reducible_terms_df) > 1500:
+            reducible_terms_df = reducible_terms_df.sort_values(
+                by=["frequency", "word_count", "term"],
+                ascending=[False, False, True],
+                kind="stable",
+            ).head(1500).copy()
+
         matched_abbreviations = self._match_abbreviations_to_terms(found_abbreviations, reducible_terms_df)
         existing_abbreviations_df = pd.DataFrame([asdict(item) for item in matched_abbreviations])
+        existing_abbreviations_df = self._deduplicate_existing_by_abbreviation(existing_abbreviations_df)
 
         merged_df = self._build_merged_table(reducible_terms_df, existing_abbreviations_df, found_abbreviations)
+        merged_df = self._ensure_suggested_abbreviation_existing_flag(merged_df, existing_abbreviations_df)
+        merged_df = self._deduplicate_merged_by_abbreviation(merged_df)
 
         return self._save_results(
             fragments_df=fragments_df,
@@ -751,10 +947,12 @@ class Stage2ReductionAnalyzer:
             self._normalize_term_for_compare(str(row.get("term", "")))
             for row in rows
         }
-        existing_by_abbr = {
-            str(row.get("suggested_abbreviation", "")).upper(): self._normalize_term_for_compare(str(row.get("term", "")))
-            for row in rows
-        }
+        existing_by_abbr: dict[str, list[str]] = {}
+        for row in rows:
+            abbr = str(row.get("suggested_abbreviation", "")).upper()
+            normalized = self._normalize_term_for_compare(str(row.get("term", "")))
+            if abbr and normalized:
+                existing_by_abbr.setdefault(abbr, []).append(normalized)
 
         additions = []
         for item in found_abbreviations:
@@ -771,11 +969,11 @@ class Stage2ReductionAnalyzer:
             suggested_abbreviation = self._build_abbreviation_from_phrase(item.long_form)
 
             is_near_duplicate = False
-            for existing in existing_terms_normalized:
+            same_abbr_terms = existing_by_abbr.get(suggested_abbreviation.upper(), [])
+            for existing in same_abbr_terms:
                 if fuzz.ratio(normalized_long_form, existing) >= 85:
-                    if existing_by_abbr.get(suggested_abbreviation.upper()) == existing:
-                        is_near_duplicate = True
-                        break
+                    is_near_duplicate = True
+                    break
             if is_near_duplicate:
                 continue
 
@@ -788,7 +986,7 @@ class Stage2ReductionAnalyzer:
                 "examples": item.sentence
             })
             existing_terms_normalized.add(normalized_long_form)
-            existing_by_abbr[suggested_abbreviation.upper()] = normalized_long_form
+            existing_by_abbr.setdefault(suggested_abbreviation.upper(), []).append(normalized_long_form)
 
         if additions:
             reducible_terms_df = pd.concat([reducible_terms_df, pd.DataFrame(additions)], ignore_index=True)
@@ -802,7 +1000,15 @@ class Stage2ReductionAnalyzer:
         if reducible_terms_df.empty:
             return found_abbreviations
 
+        # На больших документах полный перебор "каждое сокращение x каждый термин"
+        # резко замедляет анализ. Поэтому сначала строим индекс по предполагаемой аббревиатуре.
         terms = reducible_terms_df.to_dict("records")
+        terms_by_abbr: dict[str, list[dict]] = {}
+        for term_row in terms:
+            abbr = str(term_row.get("suggested_abbreviation", "")).strip().upper()
+            if abbr:
+                terms_by_abbr.setdefault(abbr, []).append(term_row)
+
         matched: List[FoundAbbreviation] = []
 
         glossary_map = {}
@@ -815,33 +1021,58 @@ class Stage2ReductionAnalyzer:
             best_score = 0.0
 
             abbreviation = self.abbreviation_extractor._normalize_abbreviation(item.abbreviation)
+            abbr_upper = abbreviation.upper()
             long_form = str(item.long_form or "").strip().lower()
 
             if abbreviation in glossary_map:
                 long_form = glossary_map[abbreviation].strip().lower()
 
-            for term_row in terms:
-                term = str(term_row.get("term", ""))
-                normalized_term = str(term_row.get("normalized_term", ""))
-                suggested_abbreviation = str(term_row.get("suggested_abbreviation", "")).upper()
+            candidate_terms = terms_by_abbr.get(abbr_upper, [])
 
-                score = 0.0
+            # Если аббревиатура совпала с рассчитанной аббревиатурой термина,
+            # этого достаточно для точного сопоставления без полного перебора.
+            if candidate_terms:
+                best_row = max(
+                    candidate_terms,
+                    key=lambda row: (
+                        int(row.get("frequency", 0) or 0),
+                        int(row.get("word_count", 0) or 0),
+                        -len(str(row.get("term", ""))),
+                    ),
+                )
+                best_term = str(best_row.get("term", ""))
+                best_score = 100.0
 
-                if abbreviation and abbreviation.upper() == suggested_abbreviation:
-                    score = 100.0
+            # Если точного совпадения по аббревиатуре нет, используем более дорогой
+            # поиск по long_form, но ограничиваем объём перебора.
+            if best_score < 100.0 and long_form:
+                searchable_terms = terms
+                if len(searchable_terms) > 1500:
+                    searchable_terms = sorted(
+                        searchable_terms,
+                        key=lambda row: (
+                            int(row.get("frequency", 0) or 0),
+                            int(row.get("word_count", 0) or 0),
+                        ),
+                        reverse=True,
+                    )[:1500]
 
-                if long_form:
+                for term_row in searchable_terms:
+                    term = str(term_row.get("term", ""))
+                    normalized_term = str(term_row.get("normalized_term", ""))
+
                     overlap_term = self._word_overlap_ratio(long_form, term)
                     overlap_norm = self._word_overlap_ratio(long_form, normalized_term)
 
+                    score = 0.0
                     if overlap_term >= 0.90:
                         score = max(score, float(fuzz.ratio(long_form, term.lower())))
                     if overlap_norm >= 0.90:
                         score = max(score, float(fuzz.ratio(long_form, normalized_term.lower())))
 
-                if score > best_score:
-                    best_score = score
-                    best_term = term
+                    if score > best_score:
+                        best_score = score
+                        best_term = term
 
             matched.append(
                 FoundAbbreviation(

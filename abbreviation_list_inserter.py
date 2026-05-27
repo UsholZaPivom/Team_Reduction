@@ -91,7 +91,14 @@ class AbbreviationListInserter:
         return " ".join(str(value).split()).strip()
 
     def _normalize_entries(self, entries: List[AbbreviationEntry]) -> List[AbbreviationEntry]:
-        dedup: Dict[Tuple[str, str], AbbreviationEntry] = {}
+        """
+        Нормализует перечень сокращений.
+        Для одной аббревиатуры оставляется одна наиболее компактная полная форма.
+        Это защищает итоговый список от дублей вида:
+        "СУБД — система управления базами данных" и
+        "СУБД — в системе управления базами данных".
+        """
+        by_abbr: Dict[str, AbbreviationEntry] = {}
 
         for item in entries:
             abbreviation = self._safe_text(item.abbreviation)
@@ -99,15 +106,28 @@ class AbbreviationListInserter:
 
             if not abbreviation or not long_form:
                 continue
+            if not self._looks_like_abbreviation(abbreviation):
+                continue
 
-            key = (abbreviation.upper(), long_form.lower())
-            dedup[key] = AbbreviationEntry(
-                abbreviation=abbreviation,
-                long_form=long_form
-            )
+            key = abbreviation.upper()
+            candidate = AbbreviationEntry(abbreviation=abbreviation, long_form=long_form)
+            current = by_abbr.get(key)
 
-        normalized = list(dedup.values())
-        normalized.sort(key=lambda x: (x.abbreviation.upper(), x.long_form.lower()))
+            if current is None:
+                by_abbr[key] = candidate
+                continue
+
+            candidate_words = len(regex.findall(r"[A-Za-zА-Яа-яЁё0-9-]+", candidate.long_form))
+            current_words = len(regex.findall(r"[A-Za-zА-Яа-яЁё0-9-]+", current.long_form))
+
+            if (
+                candidate_words < current_words
+                or (candidate_words == current_words and len(candidate.long_form) < len(current.long_form))
+            ):
+                by_abbr[key] = candidate
+
+        normalized = list(by_abbr.values())
+        normalized.sort(key=lambda x: x.abbreviation.upper())
         return normalized
 
     def load_entries_from_dataframe(self, df: pd.DataFrame) -> List[AbbreviationEntry]:
@@ -221,6 +241,8 @@ class AbbreviationListInserter:
         title: str = "Перечень обозначений и сокращений"
     ) -> Path:
         entries = self._normalize_entries(entries)
+        if not entries:
+            raise ValueError("Список сокращений пуст, отдельный документ не создан.")
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -520,6 +542,8 @@ class AbbreviationListInserter:
         section_title: str = "Перечень обозначений и сокращений"
     ) -> Path:
         entries = self._normalize_entries(entries)
+        if not entries:
+            raise ValueError("Список сокращений пуст, вставка в документ не выполнена.")
         source_docx_path = Path(source_docx_path)
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -539,7 +563,7 @@ class AbbreviationListInserter:
             self._insert_before_marker(doc, entries, marker_text, section_title)
 
         elif mode == "append_existing_list":
-            self._append_to_existing_or_create(doc, entries, section_title)
+            self._append_to_existing_section(doc, entries, section_title)
 
         else:
             raise ValueError(
@@ -594,20 +618,31 @@ class AbbreviationListInserter:
 
         self._move_table_after_paragraph(spacer, table)
 
-    def _append_to_existing_or_create(
+    def _append_to_existing_section(
         self,
         document: Document,
         entries: List[AbbreviationEntry],
         section_title: str
     ) -> None:
-        existing_heading = self._find_heading_paragraph(document, self.section_titles)
+        """
+        Строгий режим "В существующий раздел":
+        если раздел не найден, новый раздел НЕ создаётся.
+        Пользователь должен явно выбрать другой режим вставки.
+        """
+        title_candidates = [section_title] + [title for title in self.section_titles if title.lower() != section_title.lower()]
+        existing_heading = self._find_heading_paragraph(document, title_candidates)
 
         if existing_heading is None:
-            self._insert_at_end(document, entries, section_title)
-            return
+            raise ValueError(
+                f'Раздел "{section_title}" не найден. '
+                "Для создания нового перечня выберите режим 'В конец документа' или 'Перед маркером'."
+            )
 
         existing_entries, nodes_to_remove = self._collect_existing_block_after_heading(document, existing_heading)
         merged_entries = self._normalize_entries(existing_entries + entries) if existing_entries else self._normalize_entries(entries)
+
+        if not merged_entries:
+            raise ValueError("Список сокращений пуст, вставка в существующий раздел отменена.")
 
         # удаляем только непрерывный старый блок перечня сразу после заголовка
         for node in reversed(nodes_to_remove):
@@ -627,6 +662,15 @@ class AbbreviationListInserter:
             row[1].text = item.long_form
 
         self._move_table_after_paragraph(spacer, table)
+
+    # совместимость со старым именем метода
+    def _append_to_existing_or_create(
+        self,
+        document: Document,
+        entries: List[AbbreviationEntry],
+        section_title: str
+    ) -> None:
+        self._append_to_existing_section(document, entries, section_title)
 
     # -----------------------------------------------------------------
     # Высокоуровневый запуск

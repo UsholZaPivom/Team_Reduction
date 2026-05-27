@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Any
+import time
 
 import pandas as pd
 import regex
@@ -47,32 +48,66 @@ class AbbreviationNeedAnalyzer:
             "которые", "которых", "используются", "используется", "представлен",
             "представлены", "реализованы", "реализации", "данных", "включая",
         }
+        self.bad_action_starts = {
+            "открыт", "открыта", "открыто", "открытые", "создан", "создана",
+            "создано", "создание", "удаление", "удален", "удалена", "получение",
+            "внесение", "очистка", "нарушение", "исполнение", "эксплуатация",
+            "переполнение", "регистрация", "подбор", "смена", "отключение",
+            "исследование", "обход", "разработка", "проектирование"
+        }
+        self.code_markers = {
+            "var", "let", "const", "function", "class", "policy", "key",
+            "textblock", "conflict", "return", "select", "insert", "update", "delete"
+        }
 
     def run(self, docx_path: str | Path, output_dir: str | Path) -> Dict[str, Path]:
         docx_path = Path(docx_path)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        performance_log = output_dir / "analysis_performance_log.txt"
+
+        def log_perf(message: str) -> None:
+            with performance_log.open("a", encoding="utf-8") as f:
+                f.write(message + "\n")
+
+        start_total = time.perf_counter()
+        log_perf(f"[START] Анализ документа: {docx_path}")
 
         stage2_output_dir = output_dir / "stage2_intermediate"
+        start_stage2 = time.perf_counter()
         stage2_saved = self.stage2_analyzer.run(docx_path, stage2_output_dir)
+        log_perf(f"[STAGE2] Завершён за {time.perf_counter() - start_stage2:.2f} сек.")
 
         merged_csv = stage2_saved["merged_csv"]
         existing_csv = stage2_saved["existing_abbreviations_csv"]
 
+        start_read = time.perf_counter()
         merged_df = pd.read_csv(merged_csv, encoding="utf-8-sig")
         existing_abbreviations_df = pd.read_csv(existing_csv, encoding="utf-8-sig")
+        log_perf(
+            f"[READ] CSV загружены за {time.perf_counter() - start_read:.2f} сек.; "
+            f"merged={len(merged_df)}, existing={len(existing_abbreviations_df)}"
+        )
 
+        start_decisions = time.perf_counter()
         decisions = self._build_decisions(merged_df, existing_abbreviations_df)
         decisions_df = pd.DataFrame([asdict(item) for item in decisions])
         recommendations_df = self._build_recommendations_table(decisions_df)
+        log_perf(
+            f"[STAGE3] Решения построены за {time.perf_counter() - start_decisions:.2f} сек.; "
+            f"decisions={len(decisions_df)}, recommendations={len(recommendations_df)}"
+        )
 
-        return self._save_results(
+        saved = self._save_results(
             merged_df=merged_df,
             existing_abbreviations_df=existing_abbreviations_df,
             decisions_df=decisions_df,
             recommendations_df=recommendations_df,
             output_dir=output_dir,
         )
+        saved["performance_log"] = performance_log
+        log_perf(f"[FINISH] Общая длительность анализа: {time.perf_counter() - start_total:.2f} сек.")
+        return saved
 
     def _build_decisions(self, merged_df: pd.DataFrame, existing_abbreviations_df: pd.DataFrame) -> List[AbbreviationDecision]:
         decisions: List[AbbreviationDecision] = []
@@ -98,7 +133,7 @@ class AbbreviationNeedAnalyzer:
         for row in merged_df.to_dict("records"):
             term = self._clean_text(row.get("term", ""))
             suggested_abbreviation = self._clean_text(row.get("suggested_abbreviation", "")).upper()
-            abbreviation_found_in_text = bool(row.get("abbreviation_found_in_text", False))
+            abbreviation_found_in_text = self._safe_bool(row.get("abbreviation_found_in_text", False))
             found_abbreviation = self._clean_text(row.get("found_abbreviation", "")).upper()
             frequency = int(self._safe_int(row.get("frequency", 0)))
             word_count = int(self._safe_int(row.get("word_count", len(self._extract_words(term)))))
@@ -175,7 +210,13 @@ class AbbreviationNeedAnalyzer:
         if not term or not suggested_abbreviation:
             return (0, "Недостаточно данных для рекомендации.", "none", False)
 
-
+        if frequency < 2:
+            return (
+                0,
+                "Термин встречается в документе один раз, поэтому ввод новой аббревиатуры не требуется.",
+                "none",
+                False,
+            )
 
         hard_fail_reason = self._hard_filter_reason(term, suggested_abbreviation, word_count, existing_abbrs, long_forms_in_document)
         if hard_fail_reason:
@@ -253,12 +294,21 @@ class AbbreviationNeedAnalyzer:
         words_lower = [word.lower() for word in words]
         cleaned_term = self._clean_text(term).lower()
 
+        if words_lower and words_lower[0] in self.bad_action_starts:
+            return "Термин начинается со слова действия и выглядит как фрагмент инструкции или тест-кейса."
+        if any(token in self.code_markers for token in words_lower):
+            return "Термин похож на фрагмент программного кода или технической конфигурации."
+        if regex.search(r"[a-z]+[A-Z][A-Za-z]*", term):
+            return "Термин содержит camelCase и похож на фрагмент программного кода."
+        if any(symbol in term for symbol in ["=", "{", "}", "<", ">", "\\", "/", "_", "::", "->"]):
+            return "Термин содержит служебные символы и похож на фрагмент кода или конфигурации."
+
         if word_count < 2:
             return "Термин слишком короткий для ввода аббревиатуры."
         if word_count > 5:
             return "Термин слишком длинный и больше похож на фрагмент предложения, чем на устойчивый термин."
-        if any(ch in term for ch in ";:!?"):
-            return "Термин содержит знаки препинания предложения и не рассматривается как устойчивое словосочетание."
+        if any(ch in term for ch in ",;:!?"):
+            return "Термин содержит запятую или знаки препинания предложения и не рассматривается как устойчивое словосочетание."
         if words_lower and words_lower[0] in self.bad_term_starts:
             return "Термин начинается с контекстного слова и выглядит как фрагмент предложения."
         if words_lower and words_lower[-1] in self.bad_term_ends:
@@ -281,7 +331,7 @@ class AbbreviationNeedAnalyzer:
         penalties = 0
         reasons: list[str] = []
         words = [word.lower() for word in self._extract_words(term)]
-        if any(word in {"выбраны", "представлены", "осуществляется", "реализованы"} for word in words):
+        if any(word in {"выбраны", "представлены", "осуществляется", "реализованы", "открыт", "создание", "удаление", "получение", "внесение", "очистка", "нарушение", "исполнение", "эксплуатация"} for word in words):
             penalties -= 25
             reasons.append("термин содержит глагольный контекст")
         if len(words) >= 5 and any(word in self.bad_tokens for word in words[:2]):
@@ -355,6 +405,15 @@ class AbbreviationNeedAnalyzer:
     def _clean_text(value: Any) -> str:
         text = str(value).strip()
         return " ".join(text.split()) if text else ""
+
+    @staticmethod
+    def _safe_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        text = str(value).strip().lower()
+        return text in {"1", "true", "yes", "да", "истина"}
 
     @staticmethod
     def _safe_int(value: Any) -> int:

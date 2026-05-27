@@ -401,23 +401,22 @@ class EndUserBackend:
         self.log(f"Сформирован объединённый CSV со списком сокращений: {csv_path}")
         return csv_path
 
-    def _apply_repeated_declaration_replacement_if_needed(self, source_docx: Path, enabled: bool) -> Path:
+    def _apply_repeated_declaration_replacement_if_needed(self, source_docx: Path, enabled: bool, combined_csv: Path) -> Path:
         if not enabled:
             return source_docx
 
-        existing_csv = self.stage3_saved_files.get("existing_abbreviations_csv")
-        if not existing_csv or not Path(existing_csv).exists():
-            raise FileNotFoundError("Не найден existing_abbreviations.csv для этапа замены повторных объявлений.")
+        if not combined_csv or not Path(combined_csv).exists():
+            raise FileNotFoundError("Не найден объединённый CSV для этапа замены повторных объявлений.")
 
         if not self.current_run_dir:
             raise RuntimeError("Не определена текущая сессия запуска.")
 
         replacement_dir = self.current_run_dir / "replacement_stage"
         replacement_dir.mkdir(parents=True, exist_ok=True)
-        self.log("Запущена замена повторных объявлений на сокращения.")
+        self.log("Запущена безопасная замена повторных полных форм на надёжные сокращения.")
         saved = self.replacer.run(
             source_docx_path=source_docx,
-            existing_abbreviations_csv=existing_csv,
+            existing_abbreviations_csv=combined_csv,
             output_dir=replacement_dir,
         )
         output_docx = saved.get("output_docx")
@@ -425,6 +424,17 @@ class EndUserBackend:
             raise RuntimeError("Этап замены повторных объявлений завершился без output_docx.")
         output_docx = Path(output_docx)
         self.log(f"Сформирован документ после замены повторных объявлений: {output_docx}")
+
+        summary_path = saved.get("replacement_summary_csv")
+        report_path = saved.get("replacement_report_csv")
+        stats_path = saved.get("replacement_statistics_csv")
+        if summary_path:
+            self.log(f"Сводка замен: {summary_path}")
+        if report_path:
+            self.log(f"Подробный отчёт замен: {report_path}")
+        if stats_path:
+            self.log(f"Статистика замен по сокращениям: {stats_path}")
+
         return output_docx
 
     def process_document(
@@ -475,6 +485,7 @@ class EndUserBackend:
         working_docx = self._apply_repeated_declaration_replacement_if_needed(
             self.current_source_docx,
             replace_repeated_declarations,
+            combined_csv,
         )
 
         output_docx = save_dir / f"{output_name}.docx"
@@ -719,7 +730,7 @@ class EndUserApp(tk.Tk):
 
         ttk.Checkbutton(
             frm3,
-            text="Выполнять замену повторных объявлений на сокращения",
+            text="Заменять повторные полные формы только для надёжных сокращений",
             variable=self.replace_repeated_var,
         ).grid(row=6, column=0, columnspan=2, sticky="w")
         ttk.Checkbutton(

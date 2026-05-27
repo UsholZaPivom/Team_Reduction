@@ -57,6 +57,7 @@ class ReducibleWordformRecognizerV3:
     def __init__(self) -> None:
         self.segmenter = Segmenter()
         self.morph = MorphAnalyzer()
+        self._parse_cache = {}
         self.word_pattern = regex.compile(r"[A-Za-zА-Яа-яЁё-]+")
 
         self.allowed_pos = {"NOUN", "ADJF", "ADJS", "PRTF", "PRTS"}
@@ -136,11 +137,23 @@ class ReducibleWordformRecognizerV3:
         self.verbal_start_lemmas = {
             "применение", "обеспечение", "описание", "настройка",
             "использование", "реализация", "выполнение", "осуществление",
-            "категорирование", "лицензирование"
+            "категорирование", "лицензирование", "получение", "создание",
+            "удаление", "очистка", "открытие", "внесение", "нарушение",
+            "исполнение", "эксплуатация", "разработка", "проектирование",
+            "регистрация", "переполнение", "управление", "контроль", "обход",
+            "подбор", "смена", "отключение", "исследование"
         }
 
         self.project_noise_lemmas = {
             "реновация", "пояснительный", "записка", "организация", "ооо"
+        }
+
+        self.bad_phrase_start_words = {
+            "открыт", "открыта", "открыто", "открытые", "создан", "создана",
+            "создано", "создание", "удаление", "удален", "удалена", "получение",
+            "внесение", "очистка", "нарушение", "исполнение", "эксплуатация",
+            "переполнение", "регистрация", "подбор", "смена", "отключение",
+            "исследование", "обход", "разработка", "проектирование"
         }
 
     # ========================================================
@@ -190,6 +203,47 @@ class ReducibleWordformRecognizerV3:
         text = regex.sub(r"\s+", " ", text)
         return text.strip()
 
+    def _looks_like_code_or_config(self, text: str) -> bool:
+        """
+        Отсекает строки кода, конфигураций и технических параметров.
+        Такие фрагменты часто содержат много служебных символов и
+        порождают ложные сокращения.
+        """
+        text = self._clean_text(text)
+        if not text:
+            return False
+
+        lowered = text.lower()
+        code_markers = [
+            "=", ";", "{", "}", "<", ">", "\\", "/", "_", "==", "!=", "->", "::",
+            "http://", "https://", "select ", "insert ", "update ", "delete ",
+            "create table", "alter table", "class ", "def ", "function ", "var ",
+            "let ", "const ", "policy key", "textblock", "conflict", "return ",
+            "if ", "else ", "for ", "while ", "public ", "private ",
+        ]
+        marker_count = sum(1 for marker in code_markers if marker in lowered)
+
+        letters = sum(ch.isalpha() for ch in text)
+        technical = sum(1 for ch in text if ch in "=;{}<>\\/_|[]")
+        digits = sum(ch.isdigit() for ch in text)
+
+        if marker_count >= 2:
+            return True
+        if technical >= 3 and technical >= max(2, letters // 3):
+            return True
+        if digits >= 4 and technical >= 2:
+            return True
+
+        return False
+
+    def _split_by_strong_punctuation(self, text: str) -> List[str]:
+        """
+        Разбивает текст по сильным разделителям.
+        Это не позволяет объединять независимые элементы через запятую.
+        """
+        parts = regex.split(r"[,;:]+", text)
+        return [self._clean_text(part) for part in parts if self._clean_text(part)]
+
     def _remove_parenthetical_noise(self, text: str) -> str:
         """
         Убирает бытовые и уточняющие скобки, которые портят термин:
@@ -228,7 +282,13 @@ class ReducibleWordformRecognizerV3:
     # ========================================================
 
     def parse_word(self, word: str):
-        return self.morph.parse(word)[0]
+        key = str(word).lower()
+        cached = self._parse_cache.get(key)
+        if cached is not None:
+            return cached
+        parsed = self.morph.parse(word)[0]
+        self._parse_cache[key] = parsed
+        return parsed
 
     def get_normal_form(self, word: str) -> str:
         return self.parse_word(word).normal_form
@@ -255,6 +315,9 @@ class ReducibleWordformRecognizerV3:
             return True
 
         lowered = t.lower()
+
+        if self._looks_like_code_or_config(t):
+            return True
 
         if lowered in {"содержание", "обозначения и сокращения"}:
             return False
@@ -470,6 +533,8 @@ class ReducibleWordformRecognizerV3:
         words = self.extract_words(sentence)
         if len(words) < 2:
             return []
+        if words and words[0].lower() in self.bad_phrase_start_words:
+            return []
 
         analyzed_words: List[Tuple[str, str, str]] = []
         for word in words:
@@ -628,13 +693,14 @@ class ReducibleWordformRecognizerV3:
                 continue
 
             for sentence in self.split_into_sentences(cleaned_fragment_text):
-                all_mentions.extend(
-                    self.extract_candidates_from_sentence(
-                        sentence=sentence,
-                        source_type=fragment.source_type,
-                        source_index=fragment.source_index
+                for sentence_part in self._split_by_strong_punctuation(sentence):
+                    all_mentions.extend(
+                        self.extract_candidates_from_sentence(
+                            sentence=sentence_part,
+                            source_type=fragment.source_type,
+                            source_index=fragment.source_index
+                        )
                     )
-                )
 
         return all_mentions
 
@@ -672,6 +738,12 @@ class ReducibleWordformRecognizerV3:
             lemmas = normalized.split()
             frequency = int(row.get("frequency", 1))
             lowered_phrase = phrase.lower()
+
+            if any(ch in phrase for ch in ",;:"):
+                continue
+
+            if self._looks_like_code_or_config(str(row.get("examples", ""))):
+                continue
 
             if self.has_bad_boundaries(lemmas):
                 continue
@@ -766,6 +838,15 @@ class ReducibleWordformRecognizerV3:
             ((df["word_count"] == 3) & (df["frequency"] >= 1)) |
             (df["word_count"] >= 4)
         ].copy()
+
+        # Ограничение перед квадратичной постфильтрацией:
+        # на больших документах оставляем наиболее частотные и содержательные кандидаты.
+        if len(df) > 1200:
+            df = df.sort_values(
+                by=["frequency", "word_count", "phrase_example"],
+                ascending=[False, False, True],
+                kind="stable"
+            ).head(1200).copy()
 
         df = self.postfilter_aggregated_candidates(df)
 
