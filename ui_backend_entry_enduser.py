@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -524,7 +525,12 @@ class EndUserApp(tk.Tk):
         self.title("Интерфейс обработки сокращений")
         self.geometry("1600x900")
         self.minsize(1200, 700)
+        try:
+            self.state("zoomed")
+        except Exception:
+            pass
 
+        self._busy_widgets: list[tk.Widget] = []
         self.backend = EndUserBackend(logger=self._append_log)
         self._build_ui()
         self._restore_config()
@@ -545,12 +551,11 @@ class EndUserApp(tk.Tk):
 
         canvas = tk.Canvas(outer, highlightthickness=0)
         v_scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        h_scroll = ttk.Scrollbar(outer, orient="horizontal", command=canvas.xview)
-        canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+        canvas.configure(yscrollcommand=v_scroll.set)
 
         canvas.grid(row=0, column=0, sticky="nsew")
         v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
+        self.main_canvas = canvas
 
         self.content = ttk.Frame(canvas, padding=4)
         self.content.columnconfigure(0, weight=1)
@@ -564,6 +569,8 @@ class EndUserApp(tk.Tk):
 
         self.content.bind("<Configure>", _on_content_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.bind("<Enter>", lambda _e: self._bind_mousewheel_to_canvas())
+        canvas.bind("<Leave>", lambda _e: self._unbind_mousewheel_from_canvas())
 
         # 1. Основные параметры
         frm1 = ttk.LabelFrame(self.content, text="1. Основные параметры", padding=8)
@@ -579,8 +586,20 @@ class EndUserApp(tk.Tk):
 
         btn_row = ttk.Frame(frm1)
         btn_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        ttk.Button(btn_row, text="Запустить анализ и загрузить варианты", command=self._run_analysis).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(btn_row, text="Обновить список из stage 3", command=self._refresh_from_stage3).grid(row=0, column=1)
+        self.analysis_button = ttk.Button(
+            btn_row,
+            text="Запустить анализ и загрузить варианты",
+            command=self._run_analysis,
+        )
+        self.analysis_button.grid(row=0, column=0, padx=(0, 8))
+        self._busy_widgets.append(self.analysis_button)
+
+        self.status_var = tk.StringVar(value="Готово к работе.")
+        self.status_label = ttk.Label(frm1, textvariable=self.status_var)
+        self.status_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        self.progress = ttk.Progressbar(frm1, mode="indeterminate")
+        self.progress.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 0))
 
         # 2. Таблица сокращений
         frm2 = ttk.LabelFrame(self.content, text="2. Выбор новых сокращений для ввода", padding=8)
@@ -613,10 +632,8 @@ class EndUserApp(tk.Tk):
             "abbreviation",
             "long_form",
             "recommended",
-            "already_in_document",
             "score",
             "comment",
-            "source",
         )
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=18)
         headings = {
@@ -624,20 +641,16 @@ class EndUserApp(tk.Tk):
             "abbreviation": "Сокращение",
             "long_form": "Полная форма",
             "recommended": "Рекомендация",
-            "already_in_document": "Уже есть в документе",
             "score": "Оценка",
             "comment": "Комментарий",
-            "source": "Источник",
         }
         widths = {
             "selected": 80,
             "abbreviation": 140,
-            "long_form": 360,
+            "long_form": 420,
             "recommended": 120,
-            "already_in_document": 150,
             "score": 80,
-            "comment": 420,
-            "source": 180,
+            "comment": 560,
         }
         for col in columns:
             self.tree.heading(col, text=headings[col])
@@ -688,7 +701,22 @@ class EndUserApp(tk.Tk):
         ttk.Label(frm3, text="Название существующего раздела:").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=2)
         ttk.Entry(frm3, textvariable=self.section_title_var).grid(row=4, column=1, sticky="ew", pady=2)
 
-        ttk.Button(frm3, text="Запустить финальную обработку", command=self._run_final_processing).grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 8))
+        self.process_button = ttk.Button(
+            frm3,
+            text="Запустить финальную обработку",
+            command=self._run_final_processing,
+        )
+        self.process_button.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 8))
+        self._busy_widgets.append(self.process_button)
+
+        self.insert_mode_help_var = tk.StringVar()
+        self.insert_mode_help_label = ttk.Label(
+            frm3,
+            textvariable=self.insert_mode_help_var,
+            wraplength=1100,
+        )
+        self.insert_mode_help_label.grid(row=8, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
         ttk.Checkbutton(
             frm3,
             text="Выполнять замену повторных объявлений на сокращения",
@@ -718,9 +746,40 @@ class EndUserApp(tk.Tk):
     # ---------------------------
 
     def _append_log(self, message: str) -> None:
+        if threading.current_thread() is not threading.main_thread():
+            self.after(0, lambda: self._append_log(message))
+            return
         self.log_text.insert("end", f"{message}\n")
         self.log_text.see("end")
         self.update_idletasks()
+
+    def _set_busy(self, is_busy: bool, status: str) -> None:
+        self.status_var.set(status)
+        state = "disabled" if is_busy else "normal"
+        for widget in self._busy_widgets:
+            try:
+                widget.configure(state=state)
+            except Exception:
+                pass
+        if is_busy:
+            self.progress.start(10)
+            self.configure(cursor="watch")
+        else:
+            self.progress.stop()
+            self.configure(cursor="")
+        self.update_idletasks()
+
+    def _bind_mousewheel_to_canvas(self) -> None:
+        self.bind_all("<MouseWheel>", self._on_canvas_mousewheel)
+
+    def _unbind_mousewheel_from_canvas(self) -> None:
+        self.unbind_all("<MouseWheel>")
+
+    def _on_canvas_mousewheel(self, event) -> None:
+        try:
+            self.main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        except Exception:
+            pass
 
     def _restore_config(self) -> None:
         config = self.backend.load_ui_config()
@@ -779,8 +838,22 @@ class EndUserApp(tk.Tk):
         mode = self.insert_mode_var.get()
         if mode == "Перед маркером":
             self.marker_entry.configure(state="normal")
+            help_text = (
+                "Режим «Перед маркером»: список сокращений будет вставлен перед первым абзацем, "
+                "в котором найден указанный текст маркера. Например: «Введение»."
+            )
+        elif mode == "В существующий раздел":
+            self.marker_entry.configure(state="disabled")
+            help_text = (
+                "Режим «В существующий раздел»: программа ищет раздел с указанным названием "
+                "и пытается обновить список сокращений внутри него. Если раздел не найден, "
+                "нужно проверить точное название раздела в документе."
+            )
         else:
             self.marker_entry.configure(state="disabled")
+            help_text = "Режим «В конец документа»: список сокращений будет добавлен в конец итогового Word-файла."
+        if hasattr(self, "insert_mode_help_var"):
+            self.insert_mode_help_var.set(help_text)
 
     def _clear_tree(self) -> None:
         for item in self.tree.get_children():
@@ -788,7 +861,10 @@ class EndUserApp(tk.Tk):
 
     def _render_rows(self, rows: List[RecommendationRow]) -> None:
         self._clear_tree()
+        shown_count = 0
         for index, row in enumerate(rows):
+            if row.already_in_document:
+                continue
             self.tree.insert(
                 "",
                 "end",
@@ -798,11 +874,14 @@ class EndUserApp(tk.Tk):
                     row.abbreviation,
                     row.long_form,
                     "Да" if row.recommended else "Нет",
-                    "Да" if row.already_in_document else "Нет",
                     row.score,
                     row.comment,
-                    row.source,
                 ),
+            )
+            shown_count += 1
+        if shown_count == 0 and rows:
+            self._append_log(
+                "В таблице нет новых сокращений для выбора. Уже найденные в документе сокращения будут добавлены автоматически."
             )
 
     def _run_analysis(self) -> None:
@@ -813,11 +892,29 @@ class EndUserApp(tk.Tk):
             changed = self.backend.set_source_docx(source)
             if changed:
                 self._clear_tree()
-            rows = self.backend.analyze_current_document()
-            self._render_rows(rows)
+            self._set_busy(True, "Идёт анализ документа. Пожалуйста, подождите...")
         except Exception as exc:
             self._append_log(f"ОШИБКА: {exc}")
             messagebox.showerror("Ошибка", str(exc))
+            return
+
+        def worker() -> None:
+            try:
+                rows = self.backend.analyze_current_document()
+                self.after(0, lambda: self._finish_analysis_success(rows))
+            except Exception as exc:
+                self.after(0, lambda: self._finish_analysis_error(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_analysis_success(self, rows: List[RecommendationRow]) -> None:
+        self._render_rows(rows)
+        self._set_busy(False, f"Анализ завершён. Загружено вариантов: {len(rows)}.")
+
+    def _finish_analysis_error(self, exc: Exception) -> None:
+        self._set_busy(False, "Ошибка при анализе документа.")
+        self._append_log(f"ОШИБКА: {exc}")
+        messagebox.showerror("Ошибка", str(exc))
 
     def _refresh_from_stage3(self) -> None:
         try:
@@ -865,17 +962,37 @@ class EndUserApp(tk.Tk):
             if not source:
                 raise ValueError("Не выбран входной Word-файл.")
             self.backend.set_source_docx(source)
-            result = self.backend.process_document(
-                save_dir=self.save_dir_var.get().strip(),
-                output_name=self.output_name_var.get().strip(),
-                insert_mode_ui=self.insert_mode_var.get().strip(),
-                marker_text=self.marker_text_var.get().strip(),
-                section_title=self.section_title_var.get().strip(),
-                replace_repeated_declarations=self.replace_repeated_var.get(),
-                create_separate_list_docx=self.create_separate_list_var.get(),
-            )
-            result_lines = [f"{key}: {value}" for key, value in result.items()]
-            messagebox.showinfo("Успешно", "Финальная обработка завершена.\n\n" + "\n".join(result_lines))
+
+            params = {
+                "save_dir": self.save_dir_var.get().strip(),
+                "output_name": self.output_name_var.get().strip(),
+                "insert_mode_ui": self.insert_mode_var.get().strip(),
+                "marker_text": self.marker_text_var.get().strip(),
+                "section_title": self.section_title_var.get().strip(),
+                "replace_repeated_declarations": self.replace_repeated_var.get(),
+                "create_separate_list_docx": self.create_separate_list_var.get(),
+            }
+            self._set_busy(True, "Идёт финальная обработка документа. Пожалуйста, подождите...")
         except Exception as exc:
             self._append_log(f"ОШИБКА: {exc}")
             messagebox.showerror("Ошибка", str(exc))
+            return
+
+        def worker() -> None:
+            try:
+                result = self.backend.process_document(**params)
+                self.after(0, lambda: self._finish_processing_success(result))
+            except Exception as exc:
+                self.after(0, lambda: self._finish_processing_error(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_processing_success(self, result: Dict[str, Path]) -> None:
+        self._set_busy(False, "Финальная обработка завершена.")
+        result_lines = [f"{key}: {value}" for key, value in result.items()]
+        messagebox.showinfo("Успешно", "Финальная обработка завершена.\n\n" + "\n".join(result_lines))
+
+    def _finish_processing_error(self, exc: Exception) -> None:
+        self._set_busy(False, "Ошибка при финальной обработке документа.")
+        self._append_log(f"ОШИБКА: {exc}")
+        messagebox.showerror("Ошибка", str(exc))
